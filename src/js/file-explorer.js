@@ -89,6 +89,16 @@ const FileExplorer = (() => {
         rootPath = typeof result === 'string' ? result : result.path || result;
         window.__lubina_workspace_root = rootPath;
         loadedDirs = new Set();
+        // 安全检查：首次打开的文件夹需用户确认信任
+        const trusted = await _checkFolderTrust(rootPath);
+        if (!trusted) {
+          // 用户选择退出：清空工作区状态
+          rootPath = null;
+          window.__lubina_workspace_root = null;
+          treeData = null;
+          renderTree();
+          return;
+        }
         await loadDirectory(rootPath);
       }
     } else {
@@ -411,11 +421,80 @@ const FileExplorer = (() => {
     openFolder,
     getRootPath: () => rootPath,
     getTreeData: () => treeData,
-    /** 编程式设置工作区（供拖拽/右键打开等外部入口使用） */
+    // ── 文件夹信任检查 ──
+
+  /** 读取已信任的文件夹列表（路径标准化后存储） */
+  function _getTrustedFolders() {
+    try {
+      return JSON.parse(localStorage.getItem('lubina_trusted_folders') || '[]');
+    } catch (_) { return []; }
+  }
+
+  /** 标准化路径用于比较（统一分隔符 + 小写，Windows 不区分大小写） */
+  function _normPath(p) { return (p || '').replace(/\\/g, '/').toLowerCase(); }
+
+  /** 检查文件夹是否受信，不受信则弹安全确认窗。返回 true=可继续，false=用户退出 */
+  function _checkFolderTrust(folderPath) {
+    return new Promise((resolve) => {
+      const trusted = _getTrustedFolders();
+      const np = _normPath(folderPath);
+      // 已在受信列表中（或父目录已受信），直接通过
+      if (trusted.some(t => np.startsWith(_normPath(t)) || _normPath(t).startsWith(np))) {
+        resolve(true); return;
+      }
+
+      // 显示安全确认弹窗
+      const overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      const folderName = folderPath.split(/[/\\]/).pop() || folderPath;
+      overlay.innerHTML = `
+        <div class="modal-dialog" style="max-width:460px;">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+            <span style="font-size:1.4rem;">&#9888;</span>
+            <h3 style="margin:0;">安全检查</h3>
+          </div>
+          <div style="font-size:0.82rem;color:var(--text-sub);line-height:1.7;">
+            <p style="margin:0 0 10px;">快速安全检查：这是你自己创建的项目，还是你信任的项目？<br>（例如你自己的代码、知名的开源项目或团队的工作成果）。如果不是，请先花点时间查看此文件夹中的内容。</p>
+            <p style="margin:0 0 6px;word-break:break-all;color:var(--text-body);background:var(--bg-input);padding:4px 8px;border-radius:4px;font-family:monospace;font-size:0.78rem;">${folderPath}</p>
+            <p style="margin:0 0 10px;font-size:0.78rem;">Lubina 将能够在此处读取、编辑和执行文件。</p>
+            <p style="margin:0;"><a href="javascript:void(0)" style="color:var(--info);text-decoration:underline;">安全指南</a>&nbsp;<span style="color:var(--text-tip);font-size:0.7rem;">（即将上线）</span></p>
+          </div>
+          <div class="modal-actions" style="margin-top:16px;">
+            <button class="btn btn-ghost" id="trustModalExit" style="color:var(--accent);">不，退出</button>
+            <button class="btn btn-primary" id="trustModalTrust">是的，我信任这个文件夹</button>
+          </div>
+        </div>`;
+      document.body.appendChild(overlay);
+
+      const cleanup = () => { overlay.remove(); };
+
+      overlay.querySelector('#trustModalExit').onclick = () => { cleanup(); resolve(false); };
+      overlay.querySelector('#trustModalTrust').onclick = () => {
+        // 加入受信列表
+        trusted.push(folderPath);
+        try { localStorage.setItem('lubina_trusted_folders', JSON.stringify(trusted)); } catch (_) {}
+        cleanup(); resolve(true);
+      };
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) { cleanup(); resolve(false); } });
+      document.addEventListener('keydown', function esc(e) {
+        if (e.key === 'Escape') { cleanup(); document.removeEventListener('keydown', esc); resolve(false); }
+      });
+    });
+  }
+
+  /** 编程式设置工作区（也需安全检查） */
     setWorkspace: async (dirPath) => {
       rootPath = dirPath;
       window.__lubina_workspace_root = dirPath;
       loadedDirs = new Set();
+      const trusted = await _checkFolderTrust(dirPath);
+      if (!trusted) {
+        rootPath = null;
+        window.__lubina_workspace_root = null;
+        treeData = null;
+        renderTree();
+        return;
+      }
       await loadDirectory(dirPath);
     },
   };

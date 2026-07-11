@@ -237,6 +237,10 @@ const Chat = (() => {
       }
     }
 
+    // 所有检查通过，清空输入框（在这之前 sendMessage 可能因各种检查提前 return）
+    const inp = document.getElementById('chatInput');
+    if (inp) { inp.value = ''; inp.style.height = 'auto'; }
+
     // 锁定模式和模型
     _lock();
     conv.mode = chatMode;

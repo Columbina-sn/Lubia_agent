@@ -224,7 +224,7 @@ const App = (() => {
         const inp = document.getElementById('chatInput');
         if (!inp) return;
         const v = inp.value.trim();
-        if (v && typeof Chat !== 'undefined') { Chat.sendMessage(v); inp.value = ''; inp.style.height = 'auto'; }
+        if (v && typeof Chat !== 'undefined') { Chat.sendMessage(v); }
         return;
       }
       // 停止按钮
@@ -257,7 +257,7 @@ const App = (() => {
       if (e.target.id === 'chatInput' && e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         const v = e.target.value.trim();
-        if (v && typeof Chat !== 'undefined') { Chat.sendMessage(v); e.target.value = ''; e.target.style.height = 'auto'; }
+        if (v && typeof Chat !== 'undefined') { Chat.sendMessage(v); }
       }
     });
 

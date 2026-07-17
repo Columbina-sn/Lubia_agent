@@ -928,51 +928,14 @@ const Chat = (() => {
     if (!conv) return;
     const isActive = convId === activeConversationId;
 
-    // 移除旧菜单
-    const old = document.querySelector('.conv-context-menu');
-    if (old) old.remove();
-
-    const menu = document.createElement('div');
-    menu.className = 'conv-context-menu';
-    menu.style.left = e.clientX + 'px';
-    menu.style.top = e.clientY + 'px';
-
     const items = [];
-    // 打开（已激活的不显示也不响应）
-    if (!isActive) {
-      items.push(`<div class="conv-ctx-item" data-action="open">打开</div>`);
-    }
-    // 重命名
-    items.push(`<div class="conv-ctx-item" data-action="rename">重命名</div>`);
-    // 置顶/取消置顶
-    items.push(`<div class="conv-ctx-item" data-action="pin">${conv.pinned ? '取消置顶' : '置顶'}</div>`);
-    // 创建分支
-    items.push(`<div class="conv-ctx-item" data-action="branch">创建分支</div>`);
-    // 删除
-    items.push(`<div class="conv-ctx-item conv-ctx-danger" data-action="delete">删除</div>`);
+    if (!isActive) items.push({ label: '打开', action: () => _switchConversation(convId) });
+    items.push({ label: '重命名', action: () => _renameConversation(convId) });
+    items.push({ label: conv.pinned ? '取消置顶' : '置顶', action: () => togglePinConversation(convId) });
+    items.push({ label: '创建分支', action: () => branchConversation(convId) });
+    items.push({ label: '删除', danger: true, action: () => deleteConversation(convId) });
 
-    menu.innerHTML = items.join('');
-    document.body.appendChild(menu);
-
-    // 点击事件
-    menu.querySelectorAll('.conv-ctx-item').forEach(item => {
-      item.onclick = () => {
-        const action = item.dataset.action;
-        menu.remove();
-        if (action === 'open') _switchConversation(convId);
-        if (action === 'rename') _renameConversation(convId);
-        if (action === 'pin') togglePinConversation(convId);
-        if (action === 'branch') branchConversation(convId);
-        if (action === 'delete') deleteConversation(convId);
-      };
-    });
-
-    // 点击外部关闭
-    const close = (ev) => {
-      if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('click', close); document.removeEventListener('keydown', escClose); }
-    };
-    const escClose = (ev) => { if (ev.key === 'Escape') { menu.remove(); document.removeEventListener('click', close); document.removeEventListener('keydown', escClose); } };
-    setTimeout(() => { document.addEventListener('click', close); document.addEventListener('keydown', escClose); }, 0);
+    App.showContextMenu(e.clientX, e.clientY, items);
   }
 
   /** 重命名对话 */

@@ -638,6 +638,12 @@ body {
   background: var(--border-light);
   margin: 4px 8px;
 }
+.context-menu-shortcut {
+  margin-left: auto;
+  font-size: 0.7rem;
+  color: var(--text-tip);
+  opacity: 0.7;
+}
 
 /* ===== Toast 通知 ===== */
 .toast-container {

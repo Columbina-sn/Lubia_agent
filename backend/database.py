@@ -301,6 +301,7 @@ def _seed_providers(conn: sqlite3.Connection):
         ("default_provider", "p_deepseek"),
         ("max_turns", "15"),
         ("max_loop_rounds", "8"),
+        ("max_loop_rounds_plan", "15"),
         ("chat_mode", "ask"),
         ("kb_model", ""),
         ("kb_provider", ""),

@@ -12,11 +12,13 @@ dist/
 CLAUDE.md
 开发日志.md
 项目初始文档.md
+项目文档.md
 输入内容.md
 初始prompt.md
 知识库.md
 前端UI颜色设计参考.html
 多agent回复内容汇总.md
+doc_sections/
 
 # Embedding 模型（预下载到本地，约 95MB，不提交）
 backend/models/

@@ -8,7 +8,6 @@
 3. 按相似度降序排列，返回 top 10
 """
 
-import json
 import difflib
 from ..database import get_db
 
@@ -80,18 +79,8 @@ async def knowledge_grep(query: str) -> str:
         # 按总分降序
         scored.sort(key=lambda x: x[0], reverse=True)
 
-        # ── 3. 格式化输出 ──
-        lines = []
-        for score, r in scored[:10]:
-            kw = []
-            try:
-                kw = json.loads(r["keywords"] or "[]")
-            except (json.JSONDecodeError, TypeError):
-                pass
-            cat = f"[{r['category']}] " if r["category"] else ""
-            kw_str = f" | 标签: {', '.join(kw)}" if kw else ""
-            lines.append(f"{cat}{r['content']}{kw_str}")
-
+        # ── 3. 格式化输出：只返回内容，不拼分类/关键词（省 token）──
+        lines = [r["content"] for r in scored[:10]]
         return "\n".join(lines)
     finally:
         conn.close()

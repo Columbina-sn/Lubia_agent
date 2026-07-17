@@ -80,6 +80,15 @@ const FileExplorer = (() => {
     // 空状态按钮
     containerEl.querySelector('[data-action="open-folder-empty"]')
       ?.addEventListener('click', openFolder);
+
+    // 文件树空白区域右键 → 隐藏文件树
+    if (treeEl) {
+      treeEl.addEventListener('contextmenu', (e) => {
+        if (e.target.closest('.tree-node')) return; // 点到文件/文件夹不管
+        e.preventDefault();
+        showBackgroundContextMenu(e.clientX, e.clientY);
+      });
+    }
   }
 
   async function openFolder() {
@@ -322,92 +331,67 @@ const FileExplorer = (() => {
     }
   }
 
-	function showFileContextMenu(x, y, node) {
-	    const ext = node.ext || node.name.split('.').pop()?.toLowerCase();
-	    const isText = TEXT_EXTS.has(ext) || ext === 'svg';
-	    const isHTML = ext === 'html' || ext === 'htm';
-	    const isMD = ext === 'md';
-	
-	    // 移除已有菜单
-	    document.querySelectorAll('.context-menu.file-menu').forEach(m => m.remove());
-	
-	    const m = document.createElement('div');
-	    m.className = 'context-menu file-menu visible';
-	    m.style.left = x + 'px'; m.style.top = y + 'px';
-	
-	    let items = '';
-	    if (isText) {
-	      items += '<div class="context-menu-item" data-a="open">打开文件</div>';
-	      items += '<div class="context-menu-item" data-a="openSide">在侧边打开</div>';
-	    }
-	    if (isHTML) {
-	      items += '<div class="context-menu-item" data-a="openPreview">渲染预览</div>';
-	    }
-	    if (isMD) {
-	      items += '<div class="context-menu-item" data-a="openPreview">以预览打开</div>';
-	    }
-	    if (!isText && !isHTML && !isMD) {
-	      items += '<div class="context-menu-item" data-a="open">打开文件</div>';
-	    }
-	
-	    m.innerHTML = items;
-	    document.body.appendChild(m);
-	
-	    // 绑定事件
-	    m.querySelector('[data-a="open"]')?.addEventListener('click', () => { m.remove(); openFile(node); });
-	    m.querySelector('[data-a="openSide"]')?.addEventListener('click', () => { m.remove(); openFileInSide(node); });
-	    m.querySelector('[data-a="openBrowser"]')?.addEventListener('click', () => { m.remove(); openInBrowser(node); });
-	    m.querySelector('[data-a="openPreview"]')?.addEventListener('click', () => { m.remove(); openWithPreview(node); });
-	
-	    // 点击外部关闭
-	    function h(e) {
-	      if (!m.parentNode) { document.removeEventListener('click', h, true); return; }
-	      if (!m.contains(e.target)) { m.remove(); document.removeEventListener('click', h, true); }
-	    }
-	    setTimeout(() => document.addEventListener('click', h, true), 0);
-	    // ESC 关闭
-	    document.addEventListener('keydown', function escH(e) {
-	      if (e.key === 'Escape') { m.remove(); document.removeEventListener('keydown', escH); document.removeEventListener('click', h, true); }
-	    });
-	  }
-	
-	  function openFileInSide(node) {
-	    const ext = node.ext || node.name.split('.').pop()?.toLowerCase();
-	    App.showPage('editor');
-	    setTimeout(() => {
-	      if (typeof Editor !== 'undefined' && Editor.openFileInSide) {
-	        Editor.openFileInSide(node.path, node.name);
-	      }
-	    }, 150);
-	  }
-	
-	  function openWithPreview(node) {
-	    const ext = node.ext || node.name.split('.').pop()?.toLowerCase();
-	    App.showPage('editor');
-	    setTimeout(() => {
-	      if (typeof Editor !== 'undefined' && Editor.openFile) {
-	        Editor.openFile(node.path, node.name, Editor.getActivePanel ? Editor.getActivePanel() : 0);
-	        // 延迟切换到预览模式
-	        setTimeout(() => {
-	          if (Editor.togglePreview) Editor.togglePreview();
-	        }, 300);
-	      }
-	    }, 150);
-	  }
-	
-	  function openInBrowser(node) {
-	    if (typeof Bridge !== 'undefined' && Bridge.isTauri()) {
-	      Bridge.openExternal(node.path);
-	    } else {
-	      showToast('请使用 Lubia 桌面版在浏览器中打开文件', 'warning');
-	    }
-	  }
-	
-	  function esc(s) {
-	    const div = document.createElement('div');
-	    div.textContent = s;
-	    return div.innerHTML;
-	  }
+  function showFileContextMenu(x, y, node) {
+    const ext = node.ext || node.name.split('.').pop()?.toLowerCase();
+    const isText = TEXT_EXTS.has(ext) || ext === 'svg';
+    const isHTML = ext === 'html' || ext === 'htm';
+    const isMD = ext === 'md';
+
+    const items = [];
+    if (isText) {
+      items.push({ label: '打开文件', action: () => openFile(node) });
+      items.push({ label: '在侧边打开', action: () => openFileInSide(node) });
+    }
+    if (isHTML) items.push({ label: '渲染预览', action: () => openWithPreview(node) });
+    if (isMD) items.push({ label: '以预览打开', action: () => openWithPreview(node) });
+    if (!isText && !isHTML && !isMD) items.push({ label: '打开文件', action: () => openFile(node) });
+
+    App.showContextMenu(x, y, items);
+  }
+
+  function showBackgroundContextMenu(x, y) {
+    App.showContextMenu(x, y, [
+      { label: '隐藏文件树', shortcut: 'Ctrl+B', action: () => App.toggleFileExplorer() }
+    ]);
+  }
+
+  function openFileInSide(node) {
+    const ext = node.ext || node.name.split('.').pop()?.toLowerCase();
+    App.showPage('editor');
+    setTimeout(() => {
+      if (typeof Editor !== 'undefined' && Editor.openFileInSide) {
+        Editor.openFileInSide(node.path, node.name);
+      }
+    }, 150);
+  }
+
+  function openWithPreview(node) {
+    const ext = node.ext || node.name.split('.').pop()?.toLowerCase();
+    App.showPage('editor');
+    setTimeout(() => {
+      if (typeof Editor !== 'undefined' && Editor.openFile) {
+        Editor.openFile(node.path, node.name, Editor.getActivePanel ? Editor.getActivePanel() : 0);
+        // 延迟切换到预览模式
+        setTimeout(() => {
+          if (Editor.togglePreview) Editor.togglePreview();
+        }, 300);
+      }
+    }, 150);
+  }
+
+  function openInBrowser(node) {
+    if (typeof Bridge !== 'undefined' && Bridge.isTauri()) {
+      Bridge.openExternal(node.path);
+    } else {
+      showToast('请使用 Lubia 桌面版在浏览器中打开文件', 'warning');
+    }
+  }
+
+  function esc(s) {
+    const div = document.createElement('div');
+    div.textContent = s;
+    return div.innerHTML;
+  }
 
   function showToast(msg, type) {
     if (typeof App !== 'undefined' && App.showToast) {

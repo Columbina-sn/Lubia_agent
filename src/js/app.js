@@ -74,8 +74,11 @@ const App = (() => {
 
   // ===== 页面 =====
   async function showPage(id) {
-    // 已经在目标页面，不做任何操作
-    if (state.rendered && id === state.activePage) return;
+    // 已经在目标页面 → 编辑器页面时切换文件树，其他页面不做任何操作
+    if (state.rendered && id === state.activePage) {
+      if (id === 'editor') toggleFileExplorer();
+      return;
+    }
     if (id === 'home') { state.unreadCount = 0; }
     const ok = await renderSingle(id);
     if (!ok) return;  // 用户取消了未保存弹窗
@@ -184,8 +187,13 @@ const App = (() => {
     });
     els.activityBar.addEventListener('contextmenu', e => {
       const btn = e.target.closest('.activity-btn'); if (!btn) return;
-      e.preventDefault(); e.stopPropagation(); // 阻止冒泡到 document
-      showContextMenu(e.clientX, e.clientY, btn.dataset.page);
+      e.preventDefault(); e.stopPropagation();
+      const items = [{ label: '在此处打开', action: () => showPage(btn.dataset.page) }];
+      if (btn.dataset.page === 'editor') {
+        const label = state.fileExplorerOpen ? '隐藏文件树' : '打开文件树';
+        items.push({ label, shortcut: 'Ctrl+B', action: () => toggleFileExplorer() });
+      }
+      showContextMenu(e.clientX, e.clientY, items);
     });
   }
 
@@ -203,20 +211,35 @@ const App = (() => {
     });
   }
 
-  function showContextMenu(x, y, pageId) {
+  // ── 全局右键菜单（同时只存在一个）──
+  // items: [{ label, action: fn }, { sep: true }, { label, danger: true, shortcut: "Ctrl+B", action: fn }]
+  function showContextMenu(x, y, items) {
+    // 移除旧式动态创建的菜单（不含 #contextMenu 自身）
+    document.querySelectorAll('.context-menu:not(#contextMenu), .conv-context-menu').forEach(m => m.remove());
+
     const m = els.contextMenu;
     m.classList.remove('visible');
-    m.innerHTML = `
-      <div class="context-menu-item" data-a="open">在此处打开</div>`;
-    m.querySelectorAll('.context-menu-item').forEach(item => {
-      item.onclick = () => {
-        const a = item.dataset.a;
-        if (a === 'open') showPage(pageId);
-        m.classList.remove('visible');
-      };
+
+    let html = '';
+    items.forEach((item, i) => {
+      if (item.sep) { html += '<div class="context-menu-separator"></div>'; return; }
+      const cls = item.danger ? 'context-menu-item danger' : 'context-menu-item';
+      const shortcut = item.shortcut ? `<span class="context-menu-shortcut">${item.shortcut}</span>` : '';
+      html += `<div class="${cls}" data-cm-idx="${i}"><span>${item.label}</span>${shortcut}</div>`;
     });
+
+    m.innerHTML = html;
+
+    m.querySelectorAll('.context-menu-item').forEach(el => {
+      const idx = parseInt(el.dataset.cmIdx);
+      const item = items[idx];
+      if (item && item.action) {
+        el.onclick = () => { m.classList.remove('visible'); item.action(); };
+      }
+    });
+
     m.style.left = x + 'px'; m.style.top = y + 'px';
-    m.offsetHeight; // 强制回流
+    m.offsetHeight;
     m.classList.add('visible');
   }
 
@@ -502,7 +525,7 @@ const App = (() => {
   }
 
   return {
-    init, showPage, toggleFileExplorer, applyTheme, applyFontSize,
+    init, showPage, showContextMenu, toggleFileExplorer, applyTheme, applyFontSize,
     addUnread, updateBadge, getState: () => state,
     isPathInWorkspace,
     toggleAvatarDropdown, showLoginModal, closeLoginModal, switchLoginMode, handleLogin, logout,

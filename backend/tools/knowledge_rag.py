@@ -15,7 +15,6 @@
 - 两个工具属于同一"kb"组，连续调用算重复（不重复弹泡/不计次）
 """
 
-import json
 import logging
 from ..database import get_db
 from ..services.embedding_service import get_embedding_service
@@ -79,21 +78,8 @@ async def knowledge_rag(query: str, limit: int = 8) -> str:
                 "建议：换个完全不同的表述描述你要找的内容再试一次，如果仍无结果就诚实告诉用户。"
             )
 
-        # ── 4. 格式化输出（与 knowledge_grep 风格一致）──
-        lines = []
-        for r in rows:
-            kw = []
-            try:
-                kw = json.loads(r["keywords"] or "[]")
-            except (json.JSONDecodeError, TypeError):
-                pass
-            cat = f"[{r['category']}] " if r["category"] else ""
-            kw_str = f" | 标签: {', '.join(kw)}" if kw else ""
-            # 距离越小越相似（cosine distance），转相似度便于理解
-            sim = max(0.0, 1.0 - float(r["distance"])) if r["distance"] is not None else 0.0
-            sim_str = f" (相似度: {sim:.0%})" if sim > 0 else ""
-            lines.append(f"{cat}{r['content']}{kw_str}{sim_str}")
-
+        # ── 4. 格式化输出：只返回内容，不拼分类/关键词/相似度（省 token）──
+        lines = [r["content"] for r in rows]
         return "\n".join(lines)
     except Exception as e:
         logger.error(f"RAG 搜索异常: {e}")

@@ -553,20 +553,17 @@ const Editor = (() => {
 
   function _ctxMenu(x, y, pIdx) {
     const pi = (pIdx !== undefined) ? pIdx : activePanel;
-    document.querySelectorAll('.context-menu.editor-menu').forEach(m => m.remove());
     const p = panels[pi];
     const f = p.activeFileIndex >= 0 ? p.openFiles[p.activeFileIndex] : null;
     const canPreview = f && (f.ext === 'md' || f.ext === 'html');
-    const m = document.createElement('div'); m.className = 'context-menu editor-menu visible'; m.style.left = x + 'px'; m.style.top = y + 'px';
-    m.innerHTML = `<div class="context-menu-item" data-a="save">保存</div>`
-      + (canPreview ? `<div class="context-menu-item" data-a="preview">${p.previewMode ? '返回编辑' : '预览'}</div>` : '')
-      + `<div class="context-menu-separator"></div><div class="context-menu-item" data-a="close">关闭文件</div>`;
-    document.body.appendChild(m);
-    m.querySelector('[data-a="save"]').onclick = () => { saveFile(pi); m.remove(); };
-    if (canPreview) m.querySelector('[data-a="preview"]').onclick = () => { togglePreview(pi); m.remove(); };
-    m.querySelector('[data-a="close"]').onclick = () => { closeFile(p.activeFileIndex, pi); m.remove(); };
-    function h(e) { if (!m.parentNode) { document.removeEventListener('click', h, true); return; } if (!m.contains(e.target)) { m.remove(); document.removeEventListener('click', h, true); } }
-    setTimeout(() => document.addEventListener('click', h, true), 0);
+
+    const items = [];
+    items.push({ label: '保存', action: () => saveFile(pi) });
+    if (canPreview) items.push({ label: p.previewMode ? '返回编辑' : '预览', action: () => togglePreview(pi) });
+    items.push({ sep: true });
+    items.push({ label: '关闭文件', action: () => closeFile(p.activeFileIndex, pi) });
+
+    App.showContextMenu(x, y, items);
   }
 
   // ── 分屏拖拽手柄 ──

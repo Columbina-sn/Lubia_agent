@@ -169,6 +169,7 @@ const Settings = (() => {
     const theme = localStorage.getItem('lubia_theme') || 'auto';
     const maxTurns = localStorage.getItem('lubia_max_turns') || '15';
     const maxLoopRounds = localStorage.getItem('lubia_max_loop_rounds') || '8';
+    const maxLoopRoundsPlan = localStorage.getItem('lubia_max_loop_rounds_plan') || '15';
     const fontSize = localStorage.getItem('lubia_font_size') || '1.0';
 
     container.innerHTML = `
@@ -212,11 +213,21 @@ const Settings = (() => {
       <div class="settings-card" style="margin-top:14px;">
         <div class="form-group" style="display:flex;align-items:center;justify-content:space-between;gap:16px;">
           <div>
-            <label style="margin:0;">最大循环轮数</label>
-            <p style="margin:2px 0 0 0;font-size:0.72rem;color:var(--text-tip);">AI 搜索和查资料的步数上限</p>
+            <label style="margin:0;">Ask 模式循环上限</label>
+            <p style="margin:2px 0 0 0;font-size:0.72rem;color:var(--text-tip);">简单问答的搜索步数上限</p>
           </div>
           <input type="number" class="input" id="settingMaxLoopRounds" value="${maxLoopRounds}" min="5" max="20" style="width:80px;"
                  onchange="Settings.onMaxLoopRoundsChange(this.value)">
+        </div>
+      </div>
+      <div class="settings-card" style="margin-top:14px;">
+        <div class="form-group" style="display:flex;align-items:center;justify-content:space-between;gap:16px;">
+          <div>
+            <label style="margin:0;">Plan / Auto 模式循环上限</label>
+            <p style="margin:2px 0 0 0;font-size:0.72rem;color:var(--text-tip);">复杂任务的搜索步数上限（需工作区）</p>
+          </div>
+          <input type="number" class="input" id="settingMaxLoopRoundsPlan" value="${maxLoopRoundsPlan}" min="12" max="25" style="width:80px;"
+                 onchange="Settings.onMaxLoopRoundsPlanChange(this.value)">
         </div>
       </div>
       <div class="form-actions" style="margin-top:20px;">
@@ -249,13 +260,21 @@ const Settings = (() => {
     configAPI.set('max_loop_rounds', String(v)).catch(() => {});
   }
 
+  function onMaxLoopRoundsPlanChange(value) {
+    const v = Math.max(12, Math.min(25, parseInt(value) || 15));
+    localStorage.setItem('lubia_max_loop_rounds_plan', v);
+    configAPI.set('max_loop_rounds_plan', String(v)).catch(() => {});
+  }
+
   function restoreDefaults() {
     localStorage.setItem('lubia_theme', 'auto');
     localStorage.setItem('lubia_font_size', '1.0');
     localStorage.setItem('lubia_max_turns', '15');
     localStorage.setItem('lubia_max_loop_rounds', '8');
+    localStorage.setItem('lubia_max_loop_rounds_plan', '15');
     configAPI.set('max_turns', '15').catch(() => {});
     configAPI.set('max_loop_rounds', '8').catch(() => {});
+    configAPI.set('max_loop_rounds_plan', '15').catch(() => {});
     if (typeof App !== 'undefined') {
       App.applyTheme('auto');
       App.applyFontSize(1.0);
@@ -831,7 +850,7 @@ const Settings = (() => {
     showAddProvider, onVendorChange, addProvider,
     saveProviderDetail, toggleProvider, confirmDeleteProvider,
     showAddModel, addModel, toggleModel, deleteModel,
-    onThemeChange, onFontSizeInput, onMaxTurnsChange, onMaxLoopRoundsChange, restoreDefaults,
+    onThemeChange, onFontSizeInput, onMaxTurnsChange, onMaxLoopRoundsChange, onMaxLoopRoundsPlanChange, restoreDefaults,
     onKbModelChange, _loadKbModelSelector,
     openExternal, openCodeMirrorSite, toggleVisible,
   };

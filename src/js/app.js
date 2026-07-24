@@ -47,6 +47,7 @@ const App = (() => {
     showPage('home');
     restoreLoginState();
     FileExplorer.init(els.fileExplorer);
+    _initUsageWidget();
     // 初始化窗口状态（最大化图标等）
     if (typeof Bridge !== 'undefined' && Bridge.initWindowState) Bridge.initWindowState();
   }
@@ -78,7 +79,9 @@ const App = (() => {
   async function showPage(id, options) {
     // 已经在目标页面 → 编辑器页面时切换文件树，其他页面不做任何操作
     // options.noToggle=true 时抑制文件树切换（文件树打开文件时使用）
-    if (state.rendered && id === state.activePage) {
+    // 用按钮 active class 判断当前页，比 state.activePage 更可靠
+    const isActive = els.activityBar.querySelector(`[data-page="${id}"]`)?.classList.contains('active');
+    if (state.rendered && isActive) {
       if (id === 'editor' && !options?.noToggle) toggleFileExplorer();
       return;
     }
@@ -529,12 +532,103 @@ const App = (() => {
     setTimeout(() => { toast.style.opacity = '0'; toast.style.transition = 'opacity 0.25s'; setTimeout(() => toast.remove(), 250); }, 2800);
   }
 
+  // ===== 用量实时小组件（右下角 HUD）=====
+
+  let _usageWidgetEl = null;
+  let _usageWidgetTimer = null;
+
+  function _initUsageWidget() {
+    _usageWidgetEl = document.createElement('div');
+    _usageWidgetEl.id = 'usageWidget';
+    _usageWidgetEl.className = 'usage-widget';
+    _usageWidgetEl.innerHTML =
+      '<div class="usage-widget-ring" id="uwRing"></div>' +
+      '<div class="usage-widget-lines">' +
+        '<div class="usage-widget-line"><span class="uw-arrow up">↑</span><span id="uwIn">0</span></div>' +
+        '<div class="usage-widget-line"><span class="uw-arrow down">↓</span><span id="uwOut">0</span></div>' +
+        '<div class="usage-widget-line uw-calls" id="uwCalls">0 次调用</div>' +
+      '</div>';
+    document.body.appendChild(_usageWidgetEl);
+
+    if (localStorage.getItem('lubia_usage_widget') === '1') {
+      _usageWidgetEl.classList.add('visible');
+      _refreshUsageWidget();
+      _usageWidgetTimer = setInterval(_refreshUsageWidget, 30000);
+    }
+  }
+
+  async function _refreshUsageWidget() {
+    if (!_usageWidgetEl || !_usageWidgetEl.classList.contains('visible')) return;
+    try {
+      const res = await fetch('http://127.0.0.1:19800/api/usage/stats?period=1d');
+      const json = await res.json();
+      const today = (json.data && json.data.today) || {};
+      const input = today.input_tokens || 0;
+      const output = today.output_tokens || 0;
+      const calls = today.calls || 0;
+      const ringEl = document.getElementById('uwRing');
+      const inEl = document.getElementById('uwIn');
+      const outEl = document.getElementById('uwOut');
+      const callsEl = document.getElementById('uwCalls');
+      if (ringEl) ringEl.innerHTML = _usageRingSVG(input + output);
+      if (inEl) inEl.textContent = _fmtShort(input);
+      if (outEl) outEl.textContent = _fmtShort(output);
+      if (callsEl) callsEl.textContent = calls + ' 次调用';
+    } catch (e) { /* 静默 */ }
+  }
+
+  function _fmtShort(n) {
+    if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+    if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+    return String(n);
+  }
+
+  // 环形图 SVG（逻辑与热力图颜色一致）
+  function _usageRingSVG(total) {
+    var S = 48, W = 5, LAP = 1e6;
+    var r = (S - W) / 2, c = 2 * Math.PI * r, cx = S / 2;
+    var clamped = Math.min(total, LAP * 1.2);
+    var raw = 0.40 + 0.60 * Math.pow(clamped / (LAP * 1.2), 0.35);
+    var base = Math.round(Math.min(1, Math.max(0.40, raw)) * 100);
+    var laps = Math.floor(total / LAP);
+    var rem = total % LAP;
+    var prog = Math.min(rem / LAP, 1);
+    var dash = c * prog;
+
+    function clr(layer) {
+      if (layer === 0) return 'color-mix(in srgb,var(--primary) ' + base + '%,transparent)';
+      var ap = Math.min(60, layer * 20);
+      return 'color-mix(in srgb,var(--primary) 100%,color-mix(in srgb,var(--accent) ' + ap + '%,var(--primary)))';
+    }
+
+    var svg = '<svg width="' + S + '" height="' + S + '" viewBox="0 0 ' + S + ' ' + S + '">';
+    svg += '<circle cx="' + cx + '" cy="' + cx + '" r="' + r + '" fill="none" stroke="var(--border-card)" stroke-width="' + W + '" />';
+    for (var i = 0; i < laps; i++) {
+      svg += '<circle cx="' + cx + '" cy="' + cx + '" r="' + r + '" fill="none" stroke="' + clr(i) + '" stroke-width="' + W + '" stroke-dasharray="' + c + '" stroke-dashoffset="0" transform="rotate(-90 ' + cx + ' ' + cx + ')" />';
+    }
+    svg += '<circle cx="' + cx + '" cy="' + cx + '" r="' + r + '" fill="none" stroke="' + clr(laps) + '" stroke-width="' + W + '" stroke-linecap="round" stroke-dasharray="' + dash + ' ' + (c - dash) + '" stroke-dashoffset="0" transform="rotate(-90 ' + cx + ' ' + cx + ')" />';
+    svg += '</svg>';
+    return svg;
+  }
+
+  function toggleUsageWidget(on) {
+    if (!_usageWidgetEl) return;
+    if (on) {
+      _usageWidgetEl.classList.add('visible');
+      _refreshUsageWidget();
+      if (!_usageWidgetTimer) _usageWidgetTimer = setInterval(_refreshUsageWidget, 30000);
+    } else {
+      _usageWidgetEl.classList.remove('visible');
+      if (_usageWidgetTimer) { clearInterval(_usageWidgetTimer); _usageWidgetTimer = null; }
+    }
+  }
+
   return {
     init, showPage, showContextMenu, toggleFileExplorer, applyTheme, applyFontSize,
     addUnread, updateBadge, getState: () => state,
     isPathInWorkspace,
     toggleAvatarDropdown, showLoginModal, closeLoginModal, switchLoginMode, handleLogin, logout,
-    showToast, updateAvatarUI
+    showToast, updateAvatarUI, toggleUsageWidget, _refreshUsageWidget
   };
 })();
 

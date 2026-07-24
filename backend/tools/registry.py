@@ -14,6 +14,8 @@ from .safe.knowledge_rag import knowledge_rag
 from .safe.web_search import web_search
 from .safe.web_fetch import web_fetch
 from .safe.list_files import list_files
+from .safe.read_file import read_file
+from .safe.grep import grep
 from .dangerous.knowledge_import import knowledge_import
 
 # ── 工具注册表（唯一数据源）────────────────────────────────────────
@@ -26,6 +28,9 @@ _TOOLS = [
         "type": "read",
         "label": "联网搜索",
         "group": "web_search",
+        "modes": ["ask", "plan", "auto"],
+        "timeout": 15,
+        "weight": 1.0,     # 网络调用，占完整一轮
         "func": web_search,
         "schema": {
             "type": "object",
@@ -51,6 +56,9 @@ _TOOLS = [
         "type": "read",
         "label": "网页抓取",
         "group": "web_fetch",
+        "modes": ["ask", "plan", "auto"],
+        "timeout": 10,
+        "weight": 1.0,     # 网络调用
         "func": web_fetch,
         "schema": {
             "type": "object",
@@ -75,6 +83,9 @@ _TOOLS = [
         "type": "read",
         "label": "知识库检索",
         "group": "kb",
+        "modes": ["ask", "plan", "auto"],
+        "timeout": 5,
+        "weight": 0.2,     # 探索型工具，占 1/5 轮
         "func": knowledge_grep,
         "schema": {
             "type": "object",
@@ -98,6 +109,9 @@ _TOOLS = [
         "type": "read",
         "label": "知识库语义搜索",
         "group": "kb",
+        "modes": ["ask", "plan", "auto"],
+        "timeout": 5,
+        "weight": 0.2,
         "func": knowledge_rag,
         "schema": {
             "type": "object",
@@ -121,6 +135,9 @@ _TOOLS = [
         "type": "read",
         "label": "读取文件树",
         "group": "list_files",
+        "modes": ["ask", "plan", "auto"],
+        "timeout": 5,
+        "weight": 0.2,
         "func": list_files,
         "schema": {
             "type": "object",
@@ -135,11 +152,80 @@ _TOOLS = [
         "description": (
             "list_files — 浏览用户工作区的目录结构（每次一层）。\n"
             "参数：{\"path\": \"<子目录路径，可选>\"}\n"
-            "• 工作区是用户打开的文件夹，路径已经在上下文中提供。\n"
+            "• 工作区是用户打开的文件夹，根目录文件树已在上下文中提供。\n"
             "• 每次只列出一层目录内容，目录名末尾带 / 标记。\n"
-            "• 如需深入子目录，传入 path 参数逐层展开。\n"
+            "• **逐层展开策略**：不要跳过中间层。先从根目录判断项目类型 → 进入关键子目录 → 再深入。\n"
+            "• 需要读取具体文件内容时，使用 read_file 工具。\n"
             "• 这是纯浏览工具，不消耗循环计数，可以多次连续调用。\n"
-            "• 需要读取具体文件内容时，告诉用户从文件树中打开该文件即可在编辑器中查看。"
+            "• 如果已知要找什么文件名或关键词，优先用 grep（搜路径+内容，更快）。"
+        ),
+    },
+    {
+        "name": "read_file",
+        "category": "safe",
+        "type": "read",
+        "label": "读取文件",
+        "group": "read_file",
+        "modes": ["ask", "plan", "auto"],
+        "timeout": 5,
+        "weight": 0.2,
+        "func": read_file,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "相对于工作区根目录的文件路径"},
+                "start_line": {"type": "integer", "description": "起始行号（1-based，可选，默认从头开始）"},
+                "end_line": {"type": "integer", "description": "结束行号（1-based，含该行，可选，默认到文件末尾）"},
+            },
+            "required": ["path"],
+        },
+        "description": (
+            "read_file — 安全读取工作区内的文本文件内容（带行号）。\n"
+            "参数：{\"path\": \"<相对路径>\", \"start_line\": <可选>, \"end_line\": <可选>}\n"
+            "• 先用 list_files 浏览目录找到目标文件，再用本工具读取内容。\n"
+            "• 返回内容每行带行号（如 L  42| …），方便精确定位。\n"
+            "• 文件 ≤500 行 → 全量返回。\n"
+            "• 文件 >500 行 → 返回头 200 行 + 尾 200 行，中间省略。\n"
+            "  **重要**：省略提示会明确写出省略的行号范围（如「省略第 201–1000 行」），\n"
+            "  并给出精确的 start_line/end_line 值。请按提示给的数字调用，不要自己估算。\n"
+            "  **示例**：如果提示说「省略第 201–1000 行，调用 start_line=201, end_line=1000」，\n"
+            "  就传 start_line=201（不是 300）。\n"
+            "• 支持所有文本文件（.py .js .html .css .md .txt .json .yaml .toml .rs 等）。\n"
+            "• 二进制文件（图片、PDF、exe 等）无法读取，会给出提示。\n"
+            "• 编码自动检测（utf-8/gbk/latin-1）。\n"
+            "• 路径自动限制在工作区范围内，无法读取工作区外的文件。"
+        ),
+    },
+    {
+        "name": "grep",
+        "category": "safe",
+        "type": "read",
+        "label": "代码搜索",
+        "group": "grep",
+        "modes": ["ask", "plan", "auto"],
+        "timeout": 5,
+        "weight": 0.2,
+        "func": grep,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "搜索关键词或正则，不区分大小写。≥2 字符，越具体越好。"},
+                "path_filter": {"type": "string", "description": "限定搜索的目录或文件类型（可选），如 'src/' 或 '*.py'"},
+                "max_results": {"type": "integer", "description": "最大返回条数（默认 50，上限 200）"},
+            },
+            "required": ["query"],
+        },
+        "description": (
+            "grep — 在工作区内用关键词/正则搜索文件路径和内容。\n"
+            "参数：{\"query\": \"<搜索词>\", \"path_filter\": \"<可选目录/文件>\", \"max_results\": <可选>}\n"
+            "• **同时搜索文件路径和文件内容**，路径命中优先展示。找文件用这个最快。\n"
+            "• 不区分大小写，支持正则表达式。\n"
+            "• 自动跳过 node_modules、.git、__pycache__、venv 等非源码目录。\n"
+            "• 自动跳过二进制文件和超大文件（>2MB）。\n"
+            "• 结果按文件分组，带行号和匹配行内容。文件名命中会标注「← 文件名匹配」。\n"
+            "• 每文件最多 20 条，总计上限 200 条。超过则提示缩小搜索范围。\n"
+            "• 先用 grep 定位相关文件，再用 read_file 查看完整内容。\n"
+            "• path_filter 可限定目录（如 'backend/'）或文件类型（如 '*.py'）。"
         ),
     },
     # ── 写入 / 危险工具 ──
@@ -149,6 +235,9 @@ _TOOLS = [
         "type": "write",
         "label": "知识导入",
         "group": "knowledge_import",
+        "modes": ["ask", "plan", "auto"],
+        "timeout": 10,
+        "weight": 0.5,
         "func": knowledge_import,
         "schema": {
             "type": "object",
@@ -183,6 +272,7 @@ TOOL_META: dict = {
         "label": t["label"],
         "group": t["group"],
         "category": t["category"],
+        "modes": t.get("modes", ["ask", "plan", "auto"]),
     }
     for t in _TOOLS
 }
@@ -190,14 +280,28 @@ TOOL_META: dict = {
 TOOL_LABELS: dict = {t["name"]: t["label"] for t in _TOOLS}
 
 
-def build_tools_prompt() -> str:
+def get_tools_for_mode(mode: str) -> list[dict]:
+    """获取指定模式可用的工具列表"""
+    return [t for t in _TOOLS if mode in t.get("modes", ["ask", "plan", "auto"])]
+
+
+def get_tool_names_for_mode(mode: str) -> list[str]:
+    """获取指定模式可用的工具名列表"""
+    return [t["name"] for t in get_tools_for_mode(mode)]
+
+
+def build_tools_prompt(mode: str = None) -> str:
     """生成注入系统提示词的工具描述段
 
     将每个工具的 description 拼接为提示词中的「可用工具」部分。
     描述已包含参数格式、使用时机、铁律和注意事项。
+
+    Args:
+        mode: 可选，限定只生成该模式可用的工具描述
     """
-    safe_tools = [t for t in _TOOLS if t["category"] == "safe"]
-    dangerous_tools = [t for t in _TOOLS if t["category"] == "dangerous"]
+    tools = get_tools_for_mode(mode) if mode else _TOOLS
+    safe_tools = [t for t in tools if t["category"] == "safe"]
+    dangerous_tools = [t for t in tools if t["category"] == "dangerous"]
 
     lines = ["## 可用工具\n"]
 

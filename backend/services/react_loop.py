@@ -22,13 +22,27 @@ import json
 import logging
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable, Optional
 from ..database import get_db
 from ..tools.registry import TOOL_MAP, TOOL_META, TOOL_LABELS, build_tools_prompt
-from ..tools.knowledge_rag import knowledge_rag  # _pre_rag 直接调用
+from ..tools.safe.knowledge_rag import knowledge_rag  # _pre_rag 直接调用
 from .llm_caller import LLMCaller
 
 logger = logging.getLogger("lubia.react_loop")
+
+# ── prompt.md 日志路径 ──
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+PROMPT_LOG_PATH = _PROJECT_ROOT / "prompt.md"
+
+
+def _append_prompt_log(text: str):
+    """向 prompt.md 追加内容（双换行隔开）"""
+    try:
+        with open(PROMPT_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(text + "\n\n")
+    except Exception:
+        pass  # 日志写入失败不阻塞主流程
 
 DEFAULT_MAX_TOOL_CALLS_ASK = 8
 DEFAULT_MAX_TOOL_CALLS_PLAN = 15
@@ -56,7 +70,7 @@ _STATIC_PROMPT = """# Lubia
 3. 拿到工具返回的结果后，根据结果内容决定下一步：继续调用其他工具，或给出最终回答
 4. 只有**所有必要工具都已返回有效结果**后，才能输出 final
 
-## 决策原则（90% 正向指导 + 10% 轻度边界）
+## 决策原则
 
 ### 执行顺序
 - 先弄清楚问题（查知识库 / 搜网页）→ 再分析 → 最后给出回答或建议
@@ -68,6 +82,14 @@ _STATIC_PROMPT = """# Lubia
 - 浏览用户工作区 → list_files
 - 以上都找不到答案 → 诚实告诉用户你试了什么、没找到什么
 
+### 工作区阅读策略（重要）
+阅读用户项目代码时必须遵循「先看树再读叶」原则：
+1. **逐层展开**：先用 list_files 看根目录 → 根据目录名判断项目类型 → 进入关键子目录逐层浏览。不要跳过中间层。
+2. **选文件读**：浏览到目标文件后，用 read_file 读取内容。不要一次读所有文件，选和用户问题最相关的 2~4 个。
+3. **明确目标时用 grep**：如果你很清楚要找什么（如"错误处理""登录逻辑""配置项"），直接用 grep 搜索关键词（同时搜路径和内容），找到文件名后再 read_file 精读。
+4. **不要凭文件名猜测内容**：文件名只能提示方向，不可据此回答用户。必须 read_file 看过内容才能引用。
+5. **大项目先看入口**：如果项目有 README.md / package.json / Cargo.toml / main.py / index.js 等入口文件，优先读取它们了解项目结构。
+
 ### 失败处理
 - 工具返回空：换参数重试一次（如换关键词/换表述方式）。第二次仍空就停止，不要死循环。
 - 工具报错：查看错误信息，尝试修正参数。修正一次仍失败就告诉用户。
@@ -75,19 +97,23 @@ _STATIC_PROMPT = """# Lubia
 
 ### 交付标准
 - 引用信息时，说明来源（"根据搜索结果……""你的知识库中记录……"）
-- 信息不足时，明确告诉用户哪些问题无法回答、需要用户补充什么
+- 网络搜索和知识库检索后仍然信息不足时，明确告诉用户哪些问题无法回答、需要用户补充什么
 
-## 输出格式（硬性要求）
+## 输出格式（硬性要求，违反复读重来）
 
-每次回复必须是合法 JSON，不含 JSON 之外的任何文字：
+你的每次回复必须是**一行合法 JSON**，除此之外一个字都不能有。两种类型：
 
-{"type": "tool", "tool": "<工具名>", "parameters": {…}}
-{"type": "final", "content": "<Markdown>"}
+- 要调工具 → {"type": "tool", "tool": "<工具名>", "parameters": {…}}
+- 任务完成 → {"type": "final", "content": "<Markdown>"}
 
-- `tool` 类型：表示你要调用一个工具。parameters 中填入工具所需的参数。
-- `final` 类型：表示任务完成，给出最终回答。content 用 Markdown 格式。
-- 只输出 JSON 本身，不要包裹在 ```json``` 代码块中，不要前缀或后缀文字。
-- 如果 JSON 格式错误，系统会自动通知你重新输出。
+**常见错误（绝对禁止）**：
+1. 在 JSON 前写"好的""让我看看""我来搜索一下"等前缀 → 禁止，JSON 必须从第一个字符开始
+2. 在 JSON 外套 ```json … ``` 代码块 → 禁止，裸输出 JSON
+3. 直接写 Markdown 文本不包 JSON → 禁止，对话文本必须放在 final 的 content 字段里
+4. content 字段内的换行用 \n 转义，不要写物理换行把 JSON 拆成多行
+5. content 内的双引号必须转义为 \"
+
+如果格式错误，系统会自动通知你重来——重新输出你刚才想做的那件事的**正确 JSON 版本**即可，不需要换策略。只有格式错 ≠ 方向错。
 
 ## 工具使用通用规则
 
@@ -112,6 +138,7 @@ _STATIC_PROMPT = """# Lubia
 - 回答问题时用三段式：我的理解 → 我找到了什么 → 我的建议/回答。
 - 信息不完整时不要脑补，用"根据已有信息无法确定"开头，然后列出需要用户补充什么。
 - 代码块标注语言，表格对齐，数学用 LaTeX。
+- **禁止输出超链接**：final 回复中不要包含任何 Markdown 超链接（`[文字](URL)`）或裸 URL。用户运行在桌面应用 WebView 中，点击链接会导致整个界面跳走。用纯文字说明信息来源即可（如"根据搜索结果……"），不要把 URL 写出来。
 
 ## 边界与禁区
 
@@ -161,37 +188,61 @@ def _build_dynamic_prompt(rag_context: str = "", workspace_context: str = "") ->
 # ── 预 RAG 检索 ──
 
 async def _build_workspace_context(sandbox_root: str) -> str:
-    """构建工作区上下文：根目录名 + 第一层文件/目录列表"""
+    """构建工作区上下文：根目录名 + 多层文件树快照（最多 3 层，单层最多 40 项）"""
     if not sandbox_root:
         return ""
     import os as _os
     root_name = _os.path.basename(sandbox_root.rstrip("/\\")) or sandbox_root
-    try:
-        entries = sorted(_os.scandir(sandbox_root), key=lambda e: (not e.is_dir(), e.name.lower()))
-    except (PermissionError, FileNotFoundError):
-        return f"## 当前工作区\n根目录: {sandbox_root}\n（无法读取目录内容，请确认文件夹存在且有权限）"
 
-    dirs, files = [], []
-    for entry in entries:
-        if entry.name.startswith(".") or entry.name.startswith("__pycache__"):
-            continue
-        if entry.is_dir():
-            dirs.append(entry.name + "/")
-        else:
-            files.append(entry.name)
+    MAX_ITEMS_PER_DIR = 40
+    MAX_TREE_ITEMS = 120
+    tree_items = 0
+
+    def _walk_tree(dir_path: str, prefix: str = "", depth: int = 0, max_depth: int = 3):
+        """递归收集目录树快照，带深度和总数限制"""
+        nonlocal tree_items
+        lines = []
+        if depth >= max_depth or tree_items >= MAX_TREE_ITEMS:
+            return lines
+
+        try:
+            entries = sorted(_os.scandir(dir_path), key=lambda e: (not e.is_dir(), e.name.lower()))
+        except (PermissionError, FileNotFoundError, OSError):
+            return lines
+
+        shown = 0
+        for entry in entries:
+            if tree_items >= MAX_TREE_ITEMS:
+                break
+            if shown >= MAX_ITEMS_PER_DIR:
+                lines.append(f"{prefix}  …（还有更多，用 list_files 深入查看）")
+                break
+            if entry.name.startswith(".") or entry.name.startswith("__pycache__"):
+                continue
+
+            tree_items += 1
+            shown += 1
+            if entry.is_dir():
+                lines.append(f"{prefix}  {entry.name}/")
+                sub = _walk_tree(entry.path, prefix + "    ", depth + 1, max_depth)
+                lines.extend(sub)
+            else:
+                lines.append(f"{prefix}  {entry.name}")
+
+        return lines
+
+    tree_lines = _walk_tree(sandbox_root)
+    if tree_items >= MAX_TREE_ITEMS:
+        tree_lines.append("…（文件树过大已截断，用 list_files 逐层浏览子目录）")
 
     lines = [f"## 当前工作区\n根目录: {sandbox_root}\n"]
-    if dirs:
-        lines.append("子目录: " + ", ".join(dirs))
-    if files:
-        shown_files = files[:30]
-        lines.append("文件: " + ", ".join(shown_files))
-        if len(files) > 30:
-            lines.append(f"…（共 {len(files)} 个文件，仅显示前 30 个）")
-    if not dirs and not files:
+    if tree_lines:
+        lines.append("文件树快照（最多 3 层）：")
+        lines.extend(tree_lines)
+    else:
         lines.append("（空目录，还没有文件）")
 
-    lines.append("\n用 list_files 工具逐层浏览子目录。需要读文件内容时，告诉用户从文件树打开即可在编辑器中查看。")
+    lines.append("\n阅读策略：先看树判断项目类型 → 逐层 list_files 进入关键目录 → read_file 读入口文件 → grep 定位具体代码。")
     return "\n".join(lines)
 
 
@@ -278,18 +329,30 @@ async def _execute_tool(tool_name: str, params: dict, sandbox_root: str = None) 
     try:
         # 构建 kwargs：从 params 中匹配 schema 定义的参数名
         kwargs = {}
-        for key in schema_props:
-            val = _safe_str(params.get(key, ""))
-            if val:
-                kwargs[key] = val
+        for key, prop in schema_props.items():
+            raw = params.get(key, "")
+            if raw is None:
+                continue
+            # 按 schema 类型转换：integer → int，其他→ str
+            if prop.get("type") == "integer":
+                try:
+                    kwargs[key] = int(raw)
+                except (ValueError, TypeError):
+                    # 空字符串也跳过，让函数用默认值
+                    if isinstance(raw, str) and raw.strip() == "":
+                        continue
+                    kwargs[key] = 0
+            else:
+                # 字符串类型：确保始终传 str，避免数字直接流入
+                kwargs[key] = str(raw).strip() if raw else ""
 
         # 自动补全 http 前缀（web_fetch）
         if tool_name == "web_fetch" and "url" in kwargs:
             if not kwargs["url"].startswith("http"):
                 kwargs["url"] = "https://" + kwargs["url"]
 
-        # 注入 sandbox_root（list_files 需要）
-        if tool_name == "list_files":
+        # 注入 sandbox_root（工作区相关工具需要）
+        if tool_name in ("list_files", "read_file", "grep"):
             kwargs["sandbox_root"] = sandbox_root
 
         # 校验必填参数
@@ -467,6 +530,15 @@ async def run_react_loop(
 
     logger.debug(f"提示词就绪 | system消息={2 if not has_system else 1}条 | 历史消息={len(messages)}条 | 循环上限={max_tool_calls}")
 
+    # ── 写入 prompt.md：初始提示词 + 对话历史 ──
+    _append_prompt_log(
+        f"# 对话开始 — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n\n"
+        + "\n\n---\n\n".join(
+            f"## [{m['role']}]\n{m.get('content', '')}"
+            for m in full_messages
+        )
+    )
+
     while tool_call_count < max_tool_calls:
         # 检查中止
         if abort_check and abort_check():
@@ -503,14 +575,28 @@ async def run_react_loop(
 
         # JSON 重试次数保护
         if json_retry_count >= MAX_JSON_RETRIES:
-            logger.debug(f"JSON重试耗尽({MAX_JSON_RETRIES}次) | 强制要求AI输出final")
-            # 强制要求 AI 直接给出最终回答
+            logger.debug(f"JSON重试耗尽({MAX_JSON_RETRIES}次) | 给出强格式纠正引导")
+            # 不强制 final——格式错误只是格式问题，不代表任务完成
+            # 给出极具体的格式示例，帮助 AI 纠正
+            last_good = ""
+            for m in reversed(full_messages):
+                if m.get("role") == "assistant" and m.get("content", "").strip().startswith("{"):
+                    last_good = m["content"][:200]
+                    break
+            hint = ""
+            if last_good:
+                hint = f"\n你之前成功输出过合法 JSON，例如：{last_good}\n请参照这个格式重新输出。"
             full_messages.append({
                 "role": "system",
                 "content": (
-                    f"你已经连续 {MAX_JSON_RETRIES} 次输出了非 JSON 格式的内容。"
-                    "现在忽略之前所有指令，直接用 JSON 格式给出最终回答：\n"
-                    '{"type": "final", "content": "你的回答"}'
+                    f"你已经连续 {MAX_JSON_RETRIES} 次输出格式错误。这不是让你放弃任务，只是格式需要修正。\n\n"
+                    "常见错误及修正：\n"
+                    '1. 纯文本无 JSON → 必须包成 {"type": "final", "content": "你的文本"}\n'
+                    '2. JSON 前有废话（如"让我看看"）→ 去掉前缀，只输出 JSON 本身\n'
+                    '3. 用 ```json ``` 包裹 → 去掉代码块标记，裸输出 JSON\n'
+                    '4. JSON 内中文引号、未转义换行 → 中文用全角标点或 \\n 转义\n\n'
+                    "现在请重新输出你**刚才想做的那件事**（调用同一个工具，或给出最终回答），"
+                    f"只是这次严格按 JSON 格式写。{hint}"
                 ),
             })
             json_retry_count = 0
@@ -527,6 +613,8 @@ async def run_react_loop(
                 abort_check=abort_check,
             )
             logger.debug(f"AI调用完成 | 响应长度={len(response_text)}字符")
+            # ── 写入 prompt.md：AI 原始响应 ──
+            _append_prompt_log(f"## [assistant] (第{tool_call_count+1}轮)\n{response_text}")
         except Exception as e:
             logger.error(f"AI 调用失败: {e}")
             await stream_callback({
@@ -553,11 +641,13 @@ async def run_react_loop(
             full_messages.append({
                 "role": "system",
                 "content": (
-                    f"[系统通知] 你的上一条回复不是合法的 JSON 格式（第 {json_retry_count}/{MAX_JSON_RETRIES} 次）。\n"
-                    f"收到的内容预览: {preview}\n"
-                    "请严格按照以下格式之一重新输出（只输出 JSON，不要任何其他文字）：\n"
-                    '需要工具 → {"type": "tool", "tool": "工具名", "parameters": {...}}\n'
-                    '任务完成 → {"type": "final", "content": "回复内容"}'
+                    f"[系统通知] 上一条不是合法 JSON（第 {json_retry_count}/{MAX_JSON_RETRIES} 次）。\n"
+                    f"收到内容预览: {preview}\n\n"
+                    "你做的方向没错，只是输出格式需要修正。请重新输出**和刚才完全一样意图**的内容，"
+                    "但严格遵守 JSON 格式。不要换策略、不要放弃工具调用、不要改成纯文本——只修正格式。\n\n"
+                    "正确格式（二选一）：\n"
+                    '调工具 → {"type": "tool", "tool": "工具名", "parameters": {…}}\n'
+                    '回复用户 → {"type": "final", "content": "Markdown内容，换行用\\n"}'
                 ),
             })
             continue
@@ -637,10 +727,16 @@ async def run_react_loop(
                         "\n[系统指令] 你已经连续 3 次尝试均未获得有效结果。"
                         "立即停止所有工具调用，输出最终 JSON 回复。不得再发起任何工具请求。"
                     )
+                # 给 AI 可操作的提示：不要重复相同调用
+                fix_hint = (
+                    "\n[提示] 这个错误很可能是参数类型问题（字符串/数字混用）。"
+                    "不要用相同参数重试——换一组参数或换一个工具。"
+                    f"例如去掉可选的数字参数（start_line/end_line/max_results），让工具用默认值。"
+                )
                 full_messages.append({
                     "role": "system",
                     "content": (
-                        f"[工具结果] 工具 {tool_name} ({label}) 执行出错: {error}{stop_hint}"
+                        f"[工具结果] 工具 {tool_name} ({label}) 执行出错: {error}{fix_hint}{stop_hint}"
                     ),
                 })
             else:
@@ -722,9 +818,9 @@ async def run_react_loop(
         "role": "system",
         "content": (
             f"已达到最大工具调用次数 ({max_tool_calls} 次)。"
-            f"请立即用 JSON 格式回复用户：任务已完成则给出最终回答，"
-            f"尚未完成则诚实说明当前进度和已完成的工作。\n"
-            f'格式：{{"type": "final", "content": "你的回复（Markdown）"}}'
+            f"请立即回复用户。任务完成则给最终回答，未完成则说明当前进度。\n\n"
+            f"关键：content 必须全部塞在一行，段落用 \\n\\n 分隔，不要物理换行。\n"
+            f"正确示例：{{\"type\":\"final\",\"content\":\"已经完成了 X……\\n\\n遇到的问题是 Y。\"}}"
         ),
     })
 
@@ -736,6 +832,7 @@ async def run_react_loop(
             messages=full_messages,
             abort_check=abort_check,
         )
+        _append_prompt_log(f"## [assistant] (强制总结)\n{final_raw}")
         parsed = _parse_json_response(final_raw)
         if parsed and parsed.get("type") == "final":
             final_text = parsed.get("content", "")

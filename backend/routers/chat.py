@@ -22,7 +22,10 @@ from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 from ..database import get_db
 from ..schemas.chat import ChatRequest
-from ..services.react_loop import run_react_loop
+from ..services.orchestrator.ask import AskOrchestrator
+from ..services.orchestrator.plan import PlanOrchestrator
+from ..services.orchestrator.auto import AutoOrchestrator
+from ..services.debug_logger import append_chat_log
 from ..utils import fail
 
 logger = logging.getLogger("lubia.chat")
@@ -97,6 +100,9 @@ async def chat_completions(req: ChatRequest):
     # 3. SSE 事件生成器
     abort_flag = False  # 用于检测客户端断开
 
+    # ── 根据 mode 选择编排器 ──
+    orchestrator = _get_orchestrator(req.mode)
+
     async def event_generator():
         nonlocal abort_flag
 
@@ -112,16 +118,15 @@ async def chat_completions(req: ChatRequest):
             """检查是否应该中止"""
             return abort_flag
 
-        # 启动 Re-Act 循环（在后台任务中运行）
+        # 启动编排器循环（在后台任务中运行）
         loop_task = asyncio.create_task(
-            run_react_loop(
+            orchestrator.run(
                 messages=messages,
-                provider_id=req.provider_id,
+                provider_config=dict(provider),
                 model=req.model,
                 stream_callback=stream_callback,
                 abort_check=abort_check,
                 sandbox_root=req.sandbox_root,
-                mode=req.mode,
                 session_id=session_id,
             )
         )
@@ -208,3 +213,26 @@ async def chat_completions(req: ChatRequest):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+def _get_orchestrator(mode: str):
+    """根据 mode 返回对应的编排器实例"""
+    if mode in ("agent", "auto"):
+        return AutoOrchestrator()
+    elif mode == "plan":
+        return PlanOrchestrator()
+    else:
+        return AskOrchestrator()
+
+
+@router.post("/debug-log")
+async def chat_debug_log(req: Request):
+    """前端 debug 日志持久化到 prompt.md"""
+    try:
+        body = await req.json()
+        msg = (body or {}).get("message", "")
+        if msg:
+            append_chat_log("[chat] " + str(msg))
+    except Exception:
+        pass
+    return {"code": 200, "message": "ok", "data": None}

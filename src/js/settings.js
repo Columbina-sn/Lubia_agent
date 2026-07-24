@@ -213,7 +213,7 @@ const Settings = (() => {
         <div class="form-group" style="display:flex;align-items:center;justify-content:space-between;gap:16px;">
           <div>
             <label style="margin:0;">最大对话轮数</label>
-            <p style="margin:2px 0 0 0;font-size:0.72rem;color:var(--text-tip);">对话越长，AI 记住的上下文越多</p>
+            <p style="margin:2px 0 0 0;font-size:0.72rem;color:var(--text-tip);">轮数越长，AI 记住的上下文越多，也越耗token</p>
           </div>
           <input type="number" class="input" id="settingMaxTurns" value="${maxTurns}" min="10" max="30" style="width:80px;"
                  onchange="Settings.onMaxTurnsChange(this.value)">
@@ -856,6 +856,7 @@ const Settings = (() => {
   }
 
   function _renderUsage(container) {
+    const widgetOn = localStorage.getItem('lubia_usage_widget') === '1';
     container.innerHTML = `
       <div class="settings-section-header"><h3>用量统计</h3><p class="section-desc">API 调用次数和 Token 消耗</p></div>
       <div class="settings-card" style="overflow:visible;">
@@ -863,8 +864,24 @@ const Settings = (() => {
           <div class="usage-loading">加载中…</div>
         </div>
       </div>
-      <div class="usage-disclaimer">*Token 用量为中英文混合估算值（中文~1.3字符/token，英文~4字符/token），若供应商返回实际值则优先使用。与实际账单可能不同。</div>`;
+      <div class="settings-card" style="margin-top:10px;padding:10px 14px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <span style="font-size:0.78rem;color:var(--text-sub);">左下角实时用量</span>
+          <label class="toggle-switch">
+            <input type="checkbox" id="usageWidgetToggle" ${widgetOn ? 'checked' : ''} onchange="Settings._toggleUsageWidget(this.checked)">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+      <div class="usage-disclaimer">*Token 用量为中英文混合估算值（中文~1.6字符/token，英文~4字符/token），若供应商返回实际值则优先使用。与实际账单可能不同。</div>`;
     _loadUsageStats('7d');
+  }
+
+  function _toggleUsageWidget(on) {
+    localStorage.setItem('lubia_usage_widget', on ? '1' : '0');
+    if (typeof App !== 'undefined' && App.toggleUsageWidget) {
+      App.toggleUsageWidget(on);
+    }
   }
 
   // ── 用量统计内部方法 ──
@@ -928,7 +945,7 @@ const Settings = (() => {
     try {
       const [periodData, heatData] = await Promise.all([
         api.get(`/api/usage/stats?period=${period}`),
-        api.get('/api/usage/stats?period=385d'),
+        api.get('/api/usage/stats?period=364d'),
       ]);
       _renderUsageContent(container, periodData, heatData, period);
     } catch (e) {
@@ -952,7 +969,7 @@ const Settings = (() => {
       `<button class="usage-period-btn ${p.key === period ? 'active' : ''}" onclick="Settings._switchUsagePeriod('${p.key}')">${p.label}</button>`
     ).join('');
 
-    // ── 热力图：55列×7行 = 385天 ──
+    // ── 热力图：52列×7行 = 364天 ──
     let heatHTML = _buildHeatmap(heatData.daily);
 
     // ── 统计卡片（含今日输入/输出分离）──
@@ -1013,7 +1030,7 @@ const Settings = (() => {
     container.innerHTML = `
       <div class="usage-period-bar">${periodBtns}</div>
       ${cardsHTML}
-      <div class="usage-heatmap-label">过去 385 天</div>
+      <div class="usage-heatmap-label">过去 364 天</div>
       ${heatHTML}
       <div class="usage-chart-wrap">
         <div class="usage-y-axis">${yAxisHTML}</div>
@@ -1050,7 +1067,7 @@ const Settings = (() => {
   function _buildHeatmap(daily) {
     if (!daily || daily.length === 0) return '<p class="usage-empty">暂无数据</p>';
 
-    const COLS = 55;
+    const COLS = 52;
     const ROWS = 7;
     const TOTAL = COLS * ROWS;
 
@@ -1258,6 +1275,6 @@ const Settings = (() => {
     _applyEditorTabSettings,
     onKbModelChange, _loadKbModelSelector,
     openExternal, openCodeMirrorSite, toggleVisible,
-    _switchUsagePeriod,
+    _switchUsagePeriod, _toggleUsageWidget,
   };
 })();

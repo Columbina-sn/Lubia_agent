@@ -20,6 +20,7 @@ const Chat = (() => {
   let activeConversationId = null;
   let lastRole = null;
   let _savedInput = '';  // 页面级输入框持久化
+  let _pinned = false; // 是否已把用户消息固定在顶部
 
   // 当前对话的模式和模型（UI 选择状态，发送时同步到 conv）
   let chatMode = 'ask';
@@ -42,6 +43,8 @@ const Chat = (() => {
     _loadModelSelector();
     _updateToolbarState();
     _restoreInput();
+    // 拦截聊天区所有链接 → 走默认浏览器打开，防止 WebView 页面跳走
+    _installLinkInterceptor();
   }
 
   function destroy() {
@@ -319,9 +322,11 @@ const Chat = (() => {
         if (select.querySelector(`option[value="${val}"]`)) select.value = val;
       }
     }
+    _pinned = false;
     _renderMessages(conv.messages);
     _renderConversationList();
-    _scrollToBottom();
+    const mc = document.getElementById('messageContainer');
+    if (mc) { mc.style.paddingBottom = ''; mc.scrollTop = mc.scrollHeight; }
   }
 
   // ===== 发送消息（v7：两路 —— 排队 / 正常发送）=====
@@ -360,7 +365,7 @@ const Chat = (() => {
 
     // ── 路径 A：对话正在生成 → 消息入队 ──
     if (conv.isGenerating) {
-      console.debug('[chat] 消息入队 | 队列长度=' + (conv._queue.length + 1) + ' | 内容=' + content.trim().slice(0, 40));
+      _debugLog('[chat] 消息入队 | 队列长度=' + (conv._queue.length + 1) + ' | 内容=' + content.trim().slice(0, 40));
       conv._queue.push({ content: content.trim(), timestamp: Date.now() });
       _appendQueuedMessage(content.trim());
       _saveToStorage();
@@ -371,7 +376,7 @@ const Chat = (() => {
       return;
     }
 
-    console.debug('[chat] 消息发送 | 模式=' + chatMode + ' | 模型=' + chatModelName);
+    _debugLog('[chat] 消息发送 | 模式=' + chatMode + ' | 模型=' + chatModelName);
     // ── 路径 B：正常发送 ──
     // 生成会话 ID（用于排队消息注入）
     if (!conv.sessionId) {
@@ -379,11 +384,12 @@ const Chat = (() => {
     }
     // 添加用户消息
     conv.messages.push({ role: 'user', type: 'user', content: content.trim(), timestamp: Date.now() });
-    if (conv.messages.filter(m => m.role === 'user').length === 1) {
+    const isFirstUserMsg = conv.messages.filter(m => m.role === 'user').length === 1;
+    if (isFirstUserMsg) {
       conv.title = content.trim().slice(0, 20) + (content.trim().length > 20 ? '…' : '');
     }
-    _renderMessages(conv.messages); _renderConversationList(); _scrollToBottom();
     conv.isGenerating = true;
+    _pinned = true;  // 标记需要 pin
     _updateInputState(true);
 
     // 创建流式 AI 消息占位（info 类型气泡）
@@ -395,9 +401,68 @@ const Chat = (() => {
       .filter(m => m.role === 'user' || (m.role === 'assistant' && !m.streaming && m.content))
       .map(m => ({ role: m.role, content: m.content }));
 
-    // 先渲染一次（用户气泡 + 空的 AI 占位气泡）
-    _renderMessages(conv.messages);
-    _scrollToBottom();
+    // 欢迎页 logo 飞入动效（首条消息）
+    if (isFirstUserMsg && document.querySelector('.welcome-screen .welcome-logo')) {
+      const welcomeEl = document.querySelector('.welcome-screen .welcome-logo');
+      const startRect = welcomeEl.getBoundingClientRect();
+      // 克隆浮层，它就是飞过去当头像的
+      const flyEl = welcomeEl.cloneNode(true);
+      flyEl.style.position = 'fixed';
+      flyEl.style.left = startRect.left + 'px';
+      flyEl.style.top = startRect.top + 'px';
+      flyEl.style.width = startRect.width + 'px';
+      flyEl.style.height = startRect.height + 'px';
+      flyEl.style.zIndex = '1000';
+      flyEl.style.margin = '0';
+      flyEl.style.animation = 'none';
+      flyEl.style.transition = 'all 1.2s cubic-bezier(0.22, 0.61, 0.36, 1)';
+      flyEl.style.pointerEvents = 'none';
+      flyEl.style.padding = '10px'; // 与 welcome-logo 一致
+      flyEl.style.borderRadius = '18px';
+      flyEl.style.background = 'var(--primary-gradient)';
+      flyEl.style.boxShadow = '0 6px 24px var(--primary-glow)';
+      document.body.appendChild(flyEl);
+      welcomeEl.style.opacity = '0';
+
+      // 2. 渲染消息（_renderMessages 自动 pin 用户消息到顶部）
+      _renderMessages(conv.messages);
+      _renderConversationList();
+
+      // 找到目标头像并隐藏，等飞入结束再显示
+      const targetAvatar = document.querySelector('.message-row.assistant .msg-avatar.ai');
+      if (targetAvatar) targetAvatar.style.opacity = '0';
+
+      // 3. 测量目标位置飞入
+      requestAnimationFrame(() => {
+        let targetLeft, targetTop;
+        if (targetAvatar) {
+          const r = targetAvatar.getBoundingClientRect();
+          targetLeft = r.left;
+          targetTop = r.top - 1; // 微调：avatar 在行内可能有 1px 偏移
+        } else {
+          const cr = document.getElementById('messageContainer').getBoundingClientRect();
+          targetLeft = cr.left + 22;
+          targetTop = cr.top + 18;
+        }
+        flyEl.style.left = targetLeft + 'px';
+        flyEl.style.top = targetTop + 'px';
+        flyEl.style.width = '28px';
+        flyEl.style.height = '28px';
+        flyEl.style.padding = '3px';
+        flyEl.style.borderRadius = '8px';
+        flyEl.style.boxShadow = 'none';
+
+        const finish = () => {
+          flyEl.remove();
+          if (targetAvatar) targetAvatar.style.opacity = '';
+        };
+        flyEl.addEventListener('transitionend', finish, { once: true });
+        setTimeout(finish, 1400);
+      });
+    } else {
+      _renderMessages(conv.messages);
+      _renderConversationList();
+    }
 
     _doStreamSend(conv, apiMessages, aiMsg);
   }
@@ -432,6 +497,16 @@ const Chat = (() => {
         human: '正在查看你的工作区文件夹……',
         done: '文件树读取完成',
       },
+      read_file: {
+        detail: `读取文件：${args?.path || ''}`,
+        human: '正在读取工作区文件……',
+        done: '文件读取完成',
+      },
+      grep: {
+        detail: `代码搜索：「${args?.query || ''}」`,
+        human: '正在工作区里搜索代码……',
+        done: '代码搜索完成',
+      },
       knowledge_import: {
         detail: `记住信息：${args?.content ? args.content.slice(0, 40) + '…' : ''}`,
         human: '发现了一条你不知道的信息，正在后台拆解归档……',
@@ -455,14 +530,18 @@ const Chat = (() => {
       const sec = Math.round(s % 60);
       return sec > 0 ? `${m} 分 ${sec} 秒` : `${m} 分钟`;
     }
-    return `${s.toFixed(1)} 秒`;
+    return `${parseFloat(s).toFixed(1)} 秒`;
   }
 
   async function _doStreamSend(conv, apiMessages, aiMsg) {
     let throttleTimer = null;
     // 同工具连续调用时静默，不弹气泡
-    // 工具分组：同组工具连续调用算重复（knowledge_grep + knowledge_rag 都是 "kb" 组）
-    const _TOOL_GROUPS = { knowledge_grep: 'kb', knowledge_rag: 'kb' };
+    // 工具分组：同组工具连续调用算重复（与后端 BubblePolicy 对齐）
+    const _TOOL_GROUPS = {
+      knowledge_grep: 'kb', knowledge_rag: 'kb',
+      list_files: 'workspace', read_file: 'workspace', grep: 'workspace',
+      web_search: 'web', web_fetch: 'web',
+    };
     let _lastReadGroup = '';
     let _silentMode = false;
 
@@ -478,8 +557,7 @@ const Chat = (() => {
           if (aiMsg.thinking) {
             aiMsg.thinking = false;
             aiMsg.thinkingTime = _fmtThinking((Date.now() - aiMsg.startTime) / 1000);
-            console.debug('[chat] 首次响应 | 思考耗时=' + aiMsg.thinkingTime);
-            _renderMessages(conv.messages);
+            _debugLog('[chat] 首次响应 | 思考耗时=' + aiMsg.thinkingTime);
           }
           if (!conv.messages.includes(aiMsg)) {
             conv.messages.push(aiMsg);
@@ -490,7 +568,12 @@ const Chat = (() => {
             throttleTimer = setTimeout(() => {
               throttleTimer = null;
               _updateLastBubble(aiMsg);
-              _scrollToBottom();
+              // 最终回复首次渲染到 DOM → 立刻折叠工作气泡 + 头像换位
+              if (!aiMsg._folded) {
+                aiMsg._folded = true;
+                const mc = document.getElementById('messageContainer');
+                if (mc) _collapseClosedSections(mc, true);
+              }
             }, 60);
           }
         },
@@ -499,38 +582,40 @@ const Chat = (() => {
           // 同组工具连续调用 → 静默，不弹气泡
           const group = _TOOL_GROUPS[event.tool] || event.tool;
           if (group === _lastReadGroup) {
-            console.debug('[chat] 工具静默 | ' + event.tool + ' (组=' + group + ' 连续重复)');
+            _debugLog('[chat] 工具静默 | ' + event.tool + ' (组=' + group + ' 连续重复)');
             _silentMode = true;
             return;
           }
           _silentMode = false;
           _lastReadGroup = group;
-          console.debug('[chat] 工具调用气泡 | ' + event.tool + ' | 参数=' + JSON.stringify(event.args || {}).slice(0, 100));
+          _debugLog('[chat] 工具调用气泡 | ' + event.tool + ' | 参数=' + JSON.stringify(event.args || {}).slice(0, 100));
 
           // 移除 AI 占位，插调用气泡
           const idx = conv.messages.indexOf(aiMsg);
           if (idx >= 0) conv.messages.splice(idx, 1);
           const { detail, human } = _toolLabel(event.tool, event.args, false);
+          const btype = event.bubble_type || 'tool';
           conv.messages.push({
             role: 'assistant', type: 'tool_call',
             tool: event.tool, toolDetail: detail,
-            toolHuman: human,
+            toolHuman: human, bubbleType: btype,
             content: '', streaming: false,
             timestamp: Date.now(),
           });
           _renderMessages(conv.messages);
-          _scrollToBottom();
         },
         onToolResult: (event) => {
           if (_silentMode) {
-            console.debug('[chat] 工具结果静默 | ' + event.tool + ' (静默模式)');
+            _debugLog('[chat] 工具结果静默 | ' + event.tool + ' (静默模式)');
             return;  // 静默模式不弹成功气泡
           }
-          console.debug('[chat] 工具结果气泡 | ' + event.tool + ' | 结果=' + (event.result || '').slice(0, 60));
+          _debugLog('[chat] 工具结果气泡 | ' + event.tool + ' | 结果=' + (event.result || '').slice(0, 60));
           const { human } = _toolLabel(event.tool, event.args, true);
+          const btype = event.bubble_type || 'tool';
           conv.messages.push({
             role: 'assistant', type: 'tool_result',
             tool: event.tool, toolResultHuman: human,
+            bubbleType: btype,
             content: '', streaming: false,
             timestamp: Date.now(),
           });
@@ -544,20 +629,12 @@ const Chat = (() => {
             aiMsg.type = 'info';
             conv.messages.push(aiMsg);
             _renderMessages(conv.messages);
-            _scrollToBottom();
           }
         },
         onToolError: (event) => {
-          console.debug('[chat] 工具错误 | ' + event.tool + ' | 错误=' + (event.error || '').slice(0, 100));
-          _silentMode = false;
-          conv.messages.push({
-            role: 'assistant', type: 'tool_error_msg',
-            tool: event.tool || 'system',
-            toolDetail: event.error || '工具执行出错',
-            content: '', streaming: false, timestamp: Date.now(),
-          });
-          _renderMessages(conv.messages);
-          _scrollToBottom();
+          // 错误不弹独立气泡——错误内容已通过 system 消息反馈给 LLM
+          // LLM 会在后续回复中自然地告诉用户发生了什么
+          console.debug('[chat] 工具错误(静默→交LLM处理) | ' + event.tool + ' | ' + (event.error || '').slice(0, 80));
         },
         onMaxRounds: (max) => {
           aiMsg.maxRoundsReached = max;
@@ -569,6 +646,9 @@ const Chat = (() => {
           const queuedRows = container.querySelectorAll('.message-row.user.queued');
           const injectedCount = event.messages?.length || 0;
           let i = 0;
+          // 排队消息注入后，折叠上一段工具气泡
+          _collapseClosedSections(container, false);
+
           queuedRows.forEach(row => {
             if (i < injectedCount) {
               row.classList.remove('queued');
@@ -579,7 +659,7 @@ const Chat = (() => {
           });
         },
         onDone: () => {
-          console.debug('[chat] ReAct完成 | 内容长=' + aiMsg.content.length + '字符 | 队列=' + (conv._queue?.length || 0) + '条');
+          _debugLog('[chat] ReAct完成 | 内容长=' + aiMsg.content.length + '字符 | 队列=' + (conv._queue?.length || 0) + '条');
           if (throttleTimer) { clearTimeout(throttleTimer); throttleTimer = null; }
           aiMsg.thinking = false;
           aiMsg.streaming = false;
@@ -596,13 +676,15 @@ const Chat = (() => {
           if (aiMsg.content) {
             _updateLastBubble(aiMsg);
           }
-          _scrollToBottom();
+          _pinned = false;
           conv.isGenerating = false;
           conv.abortController = null;
           _updateInputState(false);
           _saveToStorage();
           _notifyIfAway();
           _flushQueue(conv);
+          // 刷新用量小组件
+          if (typeof App !== 'undefined' && App._refreshUsageWidget) App._refreshUsageWidget();
         },
         onError: (err) => {
           if (throttleTimer) { clearTimeout(throttleTimer); throttleTimer = null; }
@@ -672,14 +754,14 @@ const Chat = (() => {
         <div class="queue-indicator">排队中…</div>
       </div>`;
     container.appendChild(row);
-    _scrollToBottom();
+    container.scrollTop = container.scrollHeight;
   }
 
   /** 消费排队消息：将 DOM 中的排队气泡转为正式气泡 → 继续发送 */
   function _flushQueue(conv) {
     if (!conv._queue || conv._queue.length === 0) return;
 
-    console.debug('[chat] 刷新队列 | 排队消息=' + conv._queue.length + '条');
+    _debugLog('[chat] 刷新队列 | 排队消息=' + conv._queue.length + '条');
     const queued = conv._queue.splice(0);
 
     // 将排队消息正式加入对话
@@ -707,6 +789,7 @@ const Chat = (() => {
       .map(m => ({ role: m.role, content: m.content }));
 
     conv.isGenerating = true;
+    _pinned = true;
     _updateInputState(true);
 
     _doStreamSend(conv, apiMessages, aiMsg);
@@ -727,10 +810,13 @@ const Chat = (() => {
     if (last?.streaming) {
       last.streaming = false;
       last.thinking = false;
-      if (!last.content) last.content = '（已停止）';
+      if (!last.content) { last.content = '（已停止生成）'; last.type = 'warning'; }
     }
     _updateInputState(false);
+    _pinned = false;
     _renderMessages((conv && conv.messages) || []);
+    const mc = document.getElementById('messageContainer');
+    if (mc) { _collapseClosedSections(mc, true); }
     _saveToStorage();
   }
 
@@ -841,20 +927,108 @@ const Chat = (() => {
       row.className = `message-row ${isUser ? 'user' : 'assistant'}`;
       row.setAttribute('data-index', index);
 
-      const showAvatar = prevRole !== msg.role;  // 连续同角色不重复头像（用户和AI均适用）
+      const showAvatar = prevRole !== msg.role;
       const avatarCls = showAvatar ? (isUser ? 'user' : 'ai') : 'ghost';
-      const avatarLabel = isUser ? '你' : 'AI';
+      const avatarHTML = isUser
+        ? `<div class="msg-avatar ${avatarCls}">你</div>`
+        : `<img class="msg-avatar ${avatarCls}" src="/Lubia.svg" alt="Lubia" onerror="this.style.display='none';this.insertAdjacentHTML('afterend','<div class=\\'msg-avatar ai-fallback\\'>AI</div>')">`;
 
       if (isUser) {
-        row.innerHTML = `<div class="msg-avatar ${avatarCls}">${avatarLabel}</div><div class="msg-bubble user-bubble">${_esc(msg.content).replace(/\n/g, '<br>')}</div>`;
+        row.innerHTML = `${avatarHTML}<div class="msg-bubble user-bubble">${_esc(msg.content).replace(/\n/g, '<br>')}</div>`;
       } else {
-        row.innerHTML = `<div class="msg-avatar ${avatarCls}">${avatarLabel}</div><div class="msg-body">${_renderAIBubble(msg)}</div>`;
+        row.innerHTML = `${avatarHTML}<div class="msg-body">${_renderAIBubble(msg)}</div>`;
       }
       container.appendChild(row);
       prevRole = msg.role;
     });
     lastRole = messages[messages.length - 1]?.role || null;
-    _scrollToBottom();
+    const allDone = !messages.some(m => m.streaming);
+    _collapseClosedSections(container, allDone);
+
+    if (_pinned) {
+      const userRows = container.querySelectorAll('.message-row.user');
+      const lastUser = userRows[userRows.length - 1];
+      if (lastUser) {
+        // 精确算 padding-bottom：滚动条到底时用户消息正好离顶 18px
+        container.style.paddingBottom = '';
+        void container.offsetHeight;
+        // 目标：scrollTop = offsetTop - 18，且 scrollTop + clientHeight = scrollHeight（滚动条刚好到底）
+        // → paddingBottom = (offsetTop - 18) + clientHeight - (scrollHeight - 18) = offsetTop + clientHeight - scrollHeight
+        const pad = lastUser.offsetTop + container.clientHeight - container.scrollHeight;
+        container.style.paddingBottom = Math.max(18, pad) + 'px';
+        // 滚到用户消息离顶 18px，然后滚动条强制到底
+        lastUser.scrollIntoView({ block: 'start', behavior: 'instant' });
+        container.scrollTop = Math.max(0, container.scrollTop - 18);
+        container.scrollTop = container.scrollHeight - container.clientHeight;
+        _debugLog('[chat] pin | pad=' + pad + ' | scrollTop=' + container.scrollTop);
+      }
+    }
+  }
+
+  /**
+   * 折叠已完成的工具气泡段。
+   * 「完成」= 后面跟着 user 消息或 final 回复了。
+   * 当前正在进行中的段（最后一个 anchor 之后）不折叠。
+   * @param {boolean} allDone - true 表示最后一段也完成了（final 来了）
+   */
+  function _collapseClosedSections(container, allDone) {
+    // 先清理旧折叠包装，还原裸 row
+    container.querySelectorAll('.tool-fold-wrapper').forEach(w => {
+      const content = w.querySelector('.tool-fold-content');
+      if (content) { while (content.firstChild) w.before(content.firstChild); }
+      w.remove();
+    });
+
+    const rows = [...container.querySelectorAll('.message-row')];
+    // anchor = user 消息 或 有实质内容的 AI 回复（info/success/error/warning 气泡含 markdown）
+    const anchors = [];
+    rows.forEach((row, i) => {
+      if (row.classList.contains('user')) { anchors.push(i); return; }
+      const body = row.querySelector('.msg-body');
+      if (!body) return;
+      if (body.querySelector('.markdown-body') || body.querySelector('.ai-info,.ai-success,.ai-error,.ai-warning')) {
+        anchors.push(i);
+      }
+    });
+
+    // 对每一段 [anchors[i]+1, anchors[i+1]-1]，如果全是 tool 气泡就折叠。
+    // 最后一段（i+1 == anchors.length-1）只有 allDone=true 时才折叠。
+    for (let a = 0; a < anchors.length - 1; a++) {
+      const start = anchors[a] + 1;
+      const end = anchors[a + 1] - 1;
+      const isLast = (a + 1 === anchors.length - 1);
+      if (isLast && !allDone) continue;  // 正在进行的段不折叠
+      if (start > end) continue;
+      const between = rows.slice(start, end + 1);
+      if (between.length === 0) continue;
+
+      const wrapper = document.createElement('div');
+      wrapper.className = 'tool-fold-wrapper';
+      wrapper.innerHTML = `<div class="tool-fold-toggle" onclick="this.parentElement.classList.toggle('expanded')">
+        <span class="fold-label-collapsed">已折叠 ${between.length} 条工作气泡</span>
+        <span class="fold-label-expanded">收起 ${between.length} 条工作气泡</span>
+        <span class="tool-fold-arrow">▶</span>
+      </div>`;
+      const content = document.createElement('div');
+      content.className = 'tool-fold-content';
+      wrapper.appendChild(content);
+      between[0].before(wrapper);
+      // 被折叠行的头像隐藏
+      between.forEach(r => {
+        const av = r.querySelector('.msg-avatar');
+        if (av) av.classList.add('ghost');
+        content.appendChild(r);
+      });
+      // 强制 anchor 行（最终回复）显示头像
+      const anchorRow = rows[anchors[a + 1]];
+      if (anchorRow && anchorRow.classList.contains('assistant')) {
+        const anchorAv = anchorRow.querySelector('.msg-avatar');
+        if (anchorAv) {
+          anchorAv.classList.remove('ghost');
+          anchorAv.classList.add('ai');
+        }
+      }
+    }
   }
 
   function _renderAIBubble(msg) {
@@ -911,16 +1085,18 @@ const Chat = (() => {
       extra += `<div class="option-buttons">${btns}</div>`;
     }
 
-    // 工具调用气泡：小字详情 + 白话说明
+    // 工具调用气泡：小字详情 + 白话说明，根据 bubble_type 选择样式
     if (type === 'tool_call') {
-      return `<div class="msg-bubble ai-bubble ai-tool-call">
+      const bCls = _bubbleClass(msg.bubbleType, 'call');
+      return `<div class="msg-bubble ai-bubble ${bCls}">
         <div class="tool-call-detail">${_esc(msg.toolDetail || '')}</div>
         <div class="tool-call-human">${_esc(msg.toolHuman || '')}</div>
       </div>`;
     }
     // 工具结果气泡：白话说明完成了什么
     if (type === 'tool_result') {
-      return `<div class="msg-bubble ai-bubble ai-tool-result">
+      const bCls = _bubbleClass(msg.bubbleType, 'result');
+      return `<div class="msg-bubble ai-bubble ${bCls}">
         <div class="tool-result-human">${_esc(msg.toolResultHuman || msg.toolHuman || '')}</div>
       </div>`;
     }
@@ -1072,7 +1248,7 @@ const Chat = (() => {
       <img class="welcome-logo" src="/Lubia.svg" alt="Lubia" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';" style="width:64px;height:64px;border-radius:18px;object-fit:contain;background:var(--primary-gradient);padding:10px;box-shadow:0 6px 24px var(--primary-glow);animation:floatLogo 3s ease-in-out infinite;">
       <div class="welcome-logo" style="display:none;">AI</div>
       <h2>Lubia</h2>
-      <p>你的桌面学习伙伴</p>
+      <p>你的桌面工作伙伴</p>
     </div>`;
   }
 
@@ -1089,15 +1265,44 @@ const Chat = (() => {
 
   // ===== 辅助 =====
 
-  function _scrollToBottom() {
-    requestAnimationFrame(() => {
-      const c = document.getElementById('messageContainer');
-      if (c) c.scrollTop = c.scrollHeight;
-    });
+  /** 移除空白 spacer */
+  /** 根据 bubble_type 返回对应的 CSS class */
+  function _bubbleClass(bubbleType, phase) {
+    // phase: 'call' = 调用中气泡, 'result' = 结果气泡
+    const map = {
+      read:   phase === 'call' ? 'ai-bubble-read-call' : 'ai-bubble-read-done',
+      exec:   phase === 'call' ? 'ai-bubble-exec-call' : 'ai-bubble-exec-done',
+      edit:   phase === 'call' ? 'ai-bubble-edit-call' : 'ai-bubble-edit-done',
+      done:   'ai-bubble-done',
+      option: 'ai-bubble-option',
+    };
+    if (bubbleType && map[bubbleType]) return map[bubbleType];
+    // 兜底：旧版通用工具气泡
+    return phase === 'call' ? 'ai-tool-call' : 'ai-tool-result';
   }
 
   function _esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
   function _escAttr(s) { return (s || '').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
+
+  let _linkInterceptorInstalled = false;
+  function _installLinkInterceptor() {
+    if (_linkInterceptorInstalled) return;
+    _linkInterceptorInstalled = true;
+    document.addEventListener('click', function (e) {
+      const a = e.target.closest('.markdown-body a[href]');
+      if (!a) return;
+      const href = a.getAttribute('href');
+      if (!href || href.startsWith('#')) return;  // 锚点放行
+      e.preventDefault();
+      e.stopPropagation();
+      // 走默认浏览器打开，不会把 WebView 跳走
+      if (typeof Bridge !== 'undefined' && Bridge.isTauri()) {
+        Bridge.openExternal(href);
+      } else {
+        window.open(href, '_blank');
+      }
+    }, true);  // 捕获阶段，确保在 WebView 默认行为之前拦截
+  }
 
   function _showToast(msg, type) {
     if (typeof App !== 'undefined' && App.showToast) App.showToast(msg, type || 'info');
@@ -1107,7 +1312,11 @@ const Chat = (() => {
     try {
       const d = localStorage.getItem('lubia_conversations');
       if (d) {
-        conversations = JSON.parse(d);
+        const parsed = JSON.parse(d);
+        // v8+ 版本化格式：{ _version: N, conversations: [...] }
+        // v7 及以前：直接是数组
+        const rawConversations = Array.isArray(parsed) ? parsed : (parsed.conversations || []);
+        conversations = rawConversations;
         conversations.forEach(c => {
           c.messages.forEach(m => { m.streaming = false; });
           // v6：为旧数据补充缺失字段
@@ -1116,10 +1325,12 @@ const Chat = (() => {
           if (c.pinned === undefined) c.pinned = false;
           c.abortController = null;
           c._queue = [];
+          // v8: 恢复 sessionId
+          if (c.sessionId === undefined) c.sessionId = null;
           // v6：错误恢复 —— 空内容的 assistant 消息标为 error
           c.messages.forEach((m, i) => {
             // 工具调用气泡无文本内容是正常的，不标为 error
-            if (m.role === 'assistant' && !m.content?.trim() && m.type !== 'tool_call' && m.type !== 'tool_result') {
+            if (m.role === 'assistant' && !m.content?.trim() && m.type !== 'tool_call' && m.type !== 'tool_result' && m.type !== 'tool_error_msg') {
               // 检查此消息之前是否有成功的工具调用（说明 AI 确实执行了操作，只是回复文本丢失）
               const hasPriorToolOps = c.messages.slice(0, i).some(
                 prior => prior.type === 'tool_call' || prior.type === 'tool_result'
@@ -1135,18 +1346,39 @@ const Chat = (() => {
             }
           });
         });
+        // 清理超过 30 天的旧对话
+        _cleanupOldConversations();
         // 只在当前会话还没选中对话时才恢复（保留页面切换间的状态）
         if (!activeConversationId && conversations.length > 0) activeConversationId = conversations[0].id;
       }
     } catch (_) { conversations = []; }
   }
 
+  /** 清理超过 30 天的旧对话（至少保留一条） */
+  function _cleanupOldConversations() {
+    const now = Date.now();
+    const ONE_MONTH = 30 * 24 * 60 * 60 * 1000;
+    const before = conversations.length;
+    conversations = conversations.filter(c => {
+      const age = now - new Date(c.createdAt).getTime();
+      return age < ONE_MONTH;
+    });
+    if (conversations.length === 0) {
+      _createConversation('新对话');
+      activeConversationId = conversations[0].id;
+    }
+    if (conversations.length < before) {
+      _debugLog('[chat] 清理过期对话 | 删除 ' + (before - conversations.length) + ' 条 | 剩余 ' + conversations.length + ' 条');
+    }
+  }
+
   function _saveToStorage() {
     try {
-      const cleaned = conversations.map(function (c) {
+      let cleaned = conversations.map(function (c) {
         return {
           id: c.id, title: c.title, model: c.model, providerId: c.providerId,
           mode: c.mode, createdAt: c.createdAt, pinned: c.pinned,
+          sessionId: c.sessionId || null,
           messages: c.messages.map(function (m) {
             return {
               role: m.role, type: m.type, content: m.content, timestamp: m.timestamp,
@@ -1156,8 +1388,47 @@ const Chat = (() => {
           })
         };
       });
-      localStorage.setItem('lubia_conversations', JSON.stringify(cleaned));
-    } catch (_) { }
+
+      // 大小保护：超过 4MB 时删除最旧的非置顶对话
+      let json = JSON.stringify({ _version: 1, conversations: cleaned });
+      const MAX_SIZE = 4 * 1024 * 1024;
+      if (json.length > MAX_SIZE) {
+        console.warn('[chat] localStorage 数据过大(' + (json.length / 1024 / 1024).toFixed(1) + 'MB)，清理旧对话');
+        while (json.length > MAX_SIZE && cleaned.length > 1) {
+          // 找最旧的非置顶对话删除
+          let oldestIdx = -1, oldestTime = Infinity;
+          for (let i = 0; i < cleaned.length; i++) {
+            if (!cleaned[i].pinned) {
+              const t = new Date(cleaned[i].createdAt).getTime();
+              if (t < oldestTime) { oldestTime = t; oldestIdx = i; }
+            }
+          }
+          if (oldestIdx >= 0) {
+            cleaned.splice(oldestIdx, 1);
+          } else {
+            break; // 只剩置顶对话，无法清理
+          }
+          json = JSON.stringify({ _version: 1, conversations: cleaned });
+        }
+        console.debug('[chat] 清理完成 | 大小=' + (json.length / 1024 / 1024).toFixed(1) + 'MB | 剩余=' + cleaned.length + '条');
+      }
+
+      localStorage.setItem('lubia_conversations', json);
+    } catch (e) {
+      console.error('[chat] localStorage 写入失败: ' + (e.message || ''));
+    }
+  }
+
+  /** 同时输出到浏览器控制台和后端 prompt.md（fire-and-forget） */
+  function _debugLog(msg) {
+    console.debug(msg);
+    try {
+      fetch(`${API_BASE}/api/chat/debug-log`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: msg }),
+      }).catch(() => {});
+    } catch (_) {}
   }
 
   // ===== 公开 API =====

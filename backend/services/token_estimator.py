@@ -3,7 +3,8 @@
 LLM API 调用时用于估算输入/输出的 token 用量。
 优先使用 API 返回的实际 usage 数据，无实际数据时用字符估算。
 
-估算规则：CJK 字符 ~1.3 字符/token，非 CJK ~4 字符/token。
+估算规则：CJK 字符 ~1.5 字符/token，非 CJK ~4 字符/token。
+主流 tokenizer（GPT-4/DeepSeek）对中文的实际比例约 1.5-1.8，取 1.5 保守估计。
 """
 
 import logging
@@ -27,7 +28,7 @@ def estimate_tokens(text: str) -> int:
             cjk += 1
         else:
             non_cjk += 1
-    return int(cjk / 1.3 + non_cjk / 4.0)
+    return int(cjk / 1.5 + non_cjk / 4.0)
 
 
 def estimate_messages_tokens(messages: list[dict]) -> int:

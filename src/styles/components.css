@@ -138,7 +138,7 @@
 
 /* 消息容器 */
 .message-container {
-  flex: 1; overflow-y: auto; padding: 18px 22px;
+  flex: 1; overflow-y: auto; padding: 18px 22px; position: relative;
   display: flex; flex-direction: column; gap: 10px;
 }
 
@@ -188,7 +188,8 @@
   display: flex; align-items: center; justify-content: center;
   font-size: 0.7rem; font-weight: 600; margin-top: 0;
 }
-.msg-avatar.ai { background: linear-gradient(135deg, #c0b3e6 0%, #a9b8e8 100%); color: #fff; }
+.msg-avatar.ai { background: var(--primary-gradient); object-fit: contain; padding: 3px; }
+.msg-avatar.ai-fallback { background: linear-gradient(135deg, #c0b3e6 0%, #a9b8e8 100%); color: #fff; font-size: 0.7rem; font-weight: 600; }
 .msg-avatar.user { background: linear-gradient(135deg, #d8d4e6, #c5bde6); color: var(--text-body); }
 .msg-avatar.ghost { visibility: hidden; }
 
@@ -1056,9 +1057,87 @@ select.input {
   word-break: break-all;
 }
 
+/* ── 工具气泡折叠 ── */
+.tool-fold-wrapper {
+  margin: 6px 0;
+}
+.tool-fold-toggle {
+  font-size: 0.76rem; color: var(--text-tip); cursor: pointer;
+  padding: 5px 10px; border-radius: 7px;
+  background: var(--primary-light); user-select: none;
+  display: flex; align-items: center; gap: 6px;
+  transition: background 0.15s;
+}
+.fold-avatar { width: 20px; height: 20px; border-radius: 5px; object-fit: contain; flex-shrink: 0; }
+.tool-fold-toggle:hover { background: color-mix(in srgb, var(--primary-light) 80%, var(--primary)); }
+.tool-fold-arrow { font-size: 0.6rem; transition: transform 0.2s; display: inline-block; }
+.tool-fold-wrapper.expanded .tool-fold-arrow { transform: rotate(90deg); }
+
+/* 收起态：toggle 文字 = "已折叠" */
+.tool-fold-toggle .fold-label-collapsed { display: inline; }
+.tool-fold-toggle .fold-label-expanded { display: none; }
+/* 展开态：toggle 文字 = "收起" */
+.tool-fold-wrapper.expanded .tool-fold-toggle .fold-label-collapsed { display: none; }
+.tool-fold-wrapper.expanded .tool-fold-toggle .fold-label-expanded { display: inline; }
+
+.tool-fold-content { display: none; }
+.tool-fold-wrapper.expanded .tool-fold-content {
+  display: flex; flex-direction: column; gap: 8px;
+  background: var(--primary-light);
+  border: 1px solid color-mix(in srgb, var(--primary-light) 70%, var(--primary));
+  border-radius: 10px;
+  padding: 12px 10px;
+  margin-top: 4px;
+}
+
 @keyframes toolPulseIn {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* ── 气泡类型：read（读取文件 / 知识库检索）── */
+.msg-bubble.ai-bubble-read-call,
+.msg-bubble.ai-bubble-read-done {
+  background: var(--bubble-read-bg);
+  border-color: var(--bubble-read-border);
+  font-size: 0.8rem; padding: 8px 14px;
+  border-radius: 4px 14px 14px 14px;
+  animation: toolPulseIn 0.3s var(--ease-out);
+}
+.msg-bubble.ai-bubble-read-done {
+  color: var(--text-sub);
+}
+
+/* ── 气泡类型：exec（联网搜索 / 网页抓取）── */
+.msg-bubble.ai-bubble-exec-call,
+.msg-bubble.ai-bubble-exec-done {
+  background: var(--bubble-exec-bg);
+  border-color: var(--bubble-exec-border);
+  font-size: 0.8rem; padding: 8px 14px;
+  border-radius: 4px 14px 14px 14px;
+  animation: toolPulseIn 0.3s var(--ease-out);
+}
+.msg-bubble.ai-bubble-exec-done {
+  color: var(--text-sub);
+}
+
+/* ── 气泡类型：edit（修改文件）── */
+.msg-bubble.ai-bubble-edit-call,
+.msg-bubble.ai-bubble-edit-done {
+  background: var(--bubble-edit-bg);
+  border-color: var(--bubble-edit-border);
+  font-size: 0.8rem; padding: 8px 14px;
+  border-radius: 4px 14px 14px 14px;
+  animation: toolPulseIn 0.3s var(--ease-out);
+}
+
+/* ── 气泡类型：done（任务完成）── */
+.msg-bubble.ai-bubble-done {
+  background: var(--bubble-done-bg);
+  border-color: var(--bubble-done-border);
+  font-size: 0.85rem; padding: 10px 16px;
+  border-radius: 4px 14px 14px 14px;
+  animation: toolPulseIn 0.3s var(--ease-out);
 }
 
 .tool-call-detail {
@@ -1124,7 +1203,7 @@ select.input {
   font-size: 0.65rem; color: var(--text-tip); margin-bottom: 4px;
 }
 .usage-heat-labels {
-  display: grid; grid-template-columns: repeat(55, 1fr);
+  display: grid; grid-template-columns: repeat(52, 1fr);
   gap: 2px; margin-bottom: 2px; padding: 0 1px;
 }
 .usage-heat-label {
@@ -1136,10 +1215,10 @@ select.input {
 
 .usage-heat-grid {
   display: grid;
-  grid-template-columns: repeat(55, 1fr);
+  grid-template-columns: repeat(52, 1fr);
   grid-template-rows: repeat(7, 1fr);
   gap: 2px;
-  aspect-ratio: 55 / 7;
+  aspect-ratio: 52 / 7;
   width: 100%;
 }
 
@@ -1257,5 +1336,54 @@ select.input {
 .usage-disclaimer {
   font-size: 0.68rem; color: var(--text-tip); text-align: center;
   margin-top: 14px; line-height: 1.6; opacity: 0.7;
+}
+
+/* ── 开关 (Toggle Switch) ── */
+
+.toggle-switch {
+  position: relative; display: inline-block; width: 40px; height: 22px;
+  flex-shrink: 0; cursor: pointer;
+}
+.toggle-switch input { opacity: 0; width: 0; height: 0; }
+.toggle-slider {
+  position: absolute; inset: 0;
+  background: var(--border-card); border-radius: 22px;
+  transition: background var(--transition-fast);
+}
+.toggle-slider::before {
+  content: ""; position: absolute; left: 3px; top: 3px;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: #fff; transition: transform var(--transition-fast);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+}
+.toggle-switch input:checked + .toggle-slider { background: var(--primary); }
+.toggle-switch input:checked + .toggle-slider::before { transform: translateX(18px); }
+
+/* ── 用量实时小组件（右下角 HUD）── */
+
+.usage-widget {
+  position: fixed; bottom: 16px; left: 16px; z-index: 200;
+  display: none; align-items: center; gap: 10px;
+  padding: 8px 12px;
+  background: var(--bg-card); border: 1px solid var(--border-card);
+  border-radius: 12px; box-shadow: 0 2px 16px var(--shadow);
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  user-select: none; pointer-events: none;
+  opacity: 0.78;
+}
+.usage-widget.visible { display: flex; }
+.usage-widget-ring { flex-shrink: 0; width: 48px; height: 48px; }
+.usage-widget-ring svg { display: block; }
+.usage-widget-lines { display: flex; flex-direction: column; gap: 1px; line-height: 1.3; }
+.usage-widget-line { font-size: 0.72rem; font-weight: 600; color: var(--text-h1); white-space: nowrap; }
+.usage-widget-line.uw-calls { font-size: 0.62rem; font-weight: 400; color: var(--text-tip); }
+.uw-arrow { display: inline-block; width: 14px; text-align: center; margin-right: 2px; }
+.uw-arrow.up   { color: var(--primary); }
+.uw-arrow.down { color: var(--accent); }
+
+@media (max-width: 600px) {
+  .usage-widget { gap: 6px; padding: 6px 10px; }
+  .usage-widget-ring { width: 36px; height: 36px; }
+  .usage-widget-line { font-size: 0.66rem; }
 }
 

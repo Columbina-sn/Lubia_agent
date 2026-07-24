@@ -8,6 +8,7 @@
 """
 import logging
 import sys
+from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,6 +22,10 @@ from .schemas.response import ApiResponse
 from .database import init_db, diagnose_vector_db
 from .routers import providers, chat, config_router, vendors, knowledge, usage
 from .utils import ok, fail
+
+# ── prompt.md 日志路径 ──
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROMPT_LOG_PATH = _PROJECT_ROOT / "prompt.md"
 
 # ═══════════════════════════════════════════
 # 日志配置
@@ -58,6 +63,8 @@ async def lifespan(app: FastAPI):
     init_db()
     # 启动诊断：检查向量系统状态
     _startup_diagnose()
+    # 清空 prompt.md 日志文件
+    _clear_prompt_log()
     yield
 
 
@@ -83,6 +90,15 @@ def _startup_diagnose():
         if dt > 0:
             status += f"（⚠ {dt} 条缺少向量，运行 rebuild_vectors.py 修复）"
         logger.info(f"向量系统就绪: {status}")
+    except Exception:
+        pass
+
+
+def _clear_prompt_log():
+    """每次软件启动时清空 prompt.md"""
+    try:
+        PROMPT_LOG_PATH.write_text("", encoding="utf-8")
+        logger.info(f"prompt.md 已清空")
     except Exception:
         pass
 

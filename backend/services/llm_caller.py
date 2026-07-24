@@ -104,6 +104,8 @@ class LLMCaller:
             "model": self._model,
             "messages": messages,
             "stream": False,
+            "temperature": 0.0,       # 工具调用场景必须确定性输出
+            "top_p": 0.1,             # 极小随机性，防止格式漂移
         }
 
         last_error = None
@@ -221,6 +223,8 @@ class LLMCaller:
             "model": self._model,
             "messages": messages,
             "stream": True,
+            "temperature": 0.0,
+            "top_p": 0.1,
         }
 
         async with httpx.AsyncClient(
@@ -310,6 +314,79 @@ class LLMCaller:
 
         return None
 
+    # ── JSON 输出 + Schema 校验 + 自动重试 ──
+
+    async def call_and_validate(
+        self,
+        messages: list[dict],
+        schema: dict,
+        *,
+        max_retries: int = 3,
+        abort_check: Optional[Callable] = None,
+    ) -> tuple[Optional[dict], int]:
+        """调用 AI → 解析 JSON → Schema 校验 → 失败自动重试
+
+        与 call_json 的区别：
+        - call_json 只管"是不是合法 JSON"
+        - call_and_validate 还要检查"JSON 的 type 字段是否合法、必填字段是否齐全"
+
+        重试流程：
+        1. 调 LLM → 拿到原始文本
+        2. OutputValidator.validate() → 检查 type/必填字段/tool名称
+        3. 校验失败 → 追加系统消息（格式纠正提示）→ 重新调 LLM
+        4. 最多重试 max_retries 次
+
+        Args:
+            messages: 消息列表（会被原地修改！追加 assistant + system 消息）
+            schema: get_schema(mode) 返回的格式定义
+            max_retries: 最大重试次数（默认 3）
+            abort_check: 可选的终止检查
+
+        Returns:
+            (parsed_dict_or_None, retries_used)
+            - 成功: ({"type":"tool",...}, 0)
+            - 重试后成功: ({"type":"final",...}, 2)
+            - 全部失败: (None, max_retries)
+        """
+        from .output_schema import OutputValidator, build_retry_hint
+
+        for attempt in range(max_retries + 1):
+            # 调 LLM
+            try:
+                raw = await self.call(messages, abort_check=abort_check)
+            except Exception as e:
+                logger.debug(f"LLM 调用失败(第{attempt+1}次): {e}")
+                if attempt < max_retries:
+                    await self._backoff(attempt)
+                    continue
+                return None, attempt
+
+            # 校验
+            result = OutputValidator.validate(raw, schema)
+            if result.ok:
+                return result.parsed, attempt
+
+            # 校验失败 → 构造重试提示
+            if attempt < max_retries:
+                logger.debug(
+                    f"输出格式校验失败(第{attempt+1}/{max_retries}次) | "
+                    f"error={result.error} | detail={result.error_detail[:80]}"
+                )
+                # 追加 AI 的原始输出（截断）
+                messages.append({
+                    "role": "assistant",
+                    "content": raw[:500],
+                })
+                # 追加格式纠正提示
+                hint = build_retry_hint(result, schema, attempt + 1, max_retries)
+                messages.append({
+                    "role": "system",
+                    "content": hint,
+                })
+                await self._backoff(attempt)
+
+        return None, max_retries
+
     # ── 内部工具 ──
 
     @staticmethod
@@ -317,13 +394,25 @@ class LLMCaller:
         """多层 JSON 解析 + 修复
 
         尝试顺序：
+        0. 正则预过滤：提取首个 { } 或 [ ] 块，丢弃前后的自然语言
         1. 纯 JSON 解析
         2. 替换单引号
         3. 移除尾部逗号
         4. ```json...``` 代码块提取
         5. 文本中 { } 或 [ ] 边界提取
+        6. 修复字符串内未转义换行（AI 最常见错误）
         """
         raw = raw.strip()
+
+        # 0. 正则预过滤：找到首个 { 或 [ 到最后一个 } 或 ]
+        #    解决 "好的，让我看看。{"type":"tool",...}" 这类 AI 前缀问题
+        if raw and raw[0] not in ('{', '['):
+            for opener, closer in [("{", "}"), ("[", "]")]:
+                start = raw.find(opener)
+                end = raw.rfind(closer)
+                if start != -1 and end != -1 and end > start:
+                    raw = raw[start:end + 1]
+                    break
 
         # 1. 直接解析
         try:
@@ -367,7 +456,53 @@ class LLMCaller:
                 except json.JSONDecodeError:
                     pass
 
+        # 6. 修复 JSON 字符串内未转义的物理换行（AI 最常见错误）
+        #    AI 经常在 content 字段里写物理换行而不是 \n，导致 json.loads 失败
+        #    此步骤追踪引号状态，把字符串内的 \n \r 替换为 \\n
+        start = raw.find('{')
+        end = raw.rfind('}')
+        if start != -1 and end != -1 and end > start:
+            fixed = LLMCaller._escape_newlines_in_strings(raw[start:end + 1])
+            if fixed != raw[start:end + 1]:
+                try:
+                    obj = json.loads(fixed)
+                    if isinstance(obj, (dict, list)):
+                        return obj
+                except json.JSONDecodeError:
+                    pass
+
         return None
+
+    @staticmethod
+    def _escape_newlines_in_strings(s: str) -> str:
+        """将 JSON 字符串值内的物理换行替换为 \\n 转义序列
+
+        追踪引号状态：在字符串内部时，\\n → \\\\n, \\r → 跳过（\\r\\n 中的 \\r）
+        不在字符串内部时保留原字符。
+        """
+        # 先统一换行符
+        s = s.replace('\r\n', '\n').replace('\r', '\n')
+        result = []
+        in_string = False
+        escape_next = False
+        for ch in s:
+            if escape_next:
+                result.append(ch)
+                escape_next = False
+                continue
+            if ch == '\\':
+                result.append(ch)
+                escape_next = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+                result.append(ch)
+                continue
+            if in_string and ch == '\n':
+                result.append('\\n')
+                continue
+            result.append(ch)
+        return ''.join(result)
 
     @staticmethod
     def _parse_error(resp, raw_body: bytes = None) -> str:
